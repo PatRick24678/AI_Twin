@@ -1,0 +1,11 @@
+{
+  "name": "tatoma-future-self-local",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "dev": "node --env-file=.env --watch server.mjs",
+    "start": "node --env-file=.env server.mjs",
+    "test": "node --test"
+  }
+}

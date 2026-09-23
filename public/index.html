@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Future Self · Tatoma prototype</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+<header><strong>FUTURE SELF <span>/ Tatoma prototype</span></strong>
+  <button id="reset" class="secondary" hidden>Reset and forget session</button></header>
+<main>
+  <p class="eyebrow">A possible future. Still your way of working.</p>
+  <p id="health" class="muted">Checking the local model…</p>
+  <p id="error" role="alert" hidden></p>
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <section id="welcome" class="panel">
+    <h1>Meet a workday<br>that could be yours.</h1>
+    <p>A short conversation, a few recognisable details, and a future self you can disagree with.</p>
+    <p>This is an AI-generated simulation, not a prediction or a complete copy of you.
+      Use fictional or appropriately anonymised material. Do not paste confidential information.</p>
+    <form id="welcome-form">
+      <label>Name or alias <input id="name" maxlength="50" required autocomplete="off"></label>
+      <label class="check"><input id="consent" type="checkbox" required>
+        I understand this is a prototype. My text stays in this local app and its local model;
+        the app does not train on it. Reset removes the session; inactive sessions expire after 30 minutes.</label>
+      <button>Start the experience</button>
+    </form>
+    <p class="muted">English, text-first prototype. No login. Refreshing starts a new browser session.</p>
+  </section>
+
+  <section id="intake" class="panel" hidden>
+    <h2>First, your ordinary workday.</h2>
+    <p class="muted">Four guided questions. The wording is scripted; the profile and twin are AI-generated.</p>
+    <div id="intake-thread" class="thread"></div>
+    <form id="answer-form"><label>Your answer
+      <textarea id="answer" maxlength="600" required rows="3"></textarea></label>
+      <button>Continue</button></form>
+  </section>
+
+  <section id="sample" class="panel" hidden>
+    <h2>Something that sounds like your work.</h2>
+    <p>An optional short email, update or brief. Remove names, contact details and confidential facts yourself.</p>
+    <form id="sample-form">
+      <label>Work sample <textarea id="sample-text" maxlength="1600" rows="5"></textarea></label>
+      <label>Audience or purpose <input id="sample-context" maxlength="180"></label>
+      <label class="check"><input id="authored" type="checkbox">I wrote this myself.</label>
+      <label class="check"><input id="typical" type="checkbox">It is typical of how I write in this context.</label>
+      <h3>Which approach feels closest?</h3>
+      <p class="muted">These are fictional examples of the same situation—not personality types.</p>
+      <div id="examples"></div>
+      <button>Build a tentative profile</button>
+      <button id="manual" type="button" class="secondary">Write my profile manually</button>
+    </form>
+  </section>
+
+  <section id="review" class="panel" hidden>
+    <h2>Does this sound like you?</h2>
+    <p id="review-note"></p>
+    <p>Edit or remove anything that is wrong. Only the statements you confirm will define the twin.</p>
+    <div id="claims"></div>
+    <div class="actions"><button id="add-claim" class="secondary">Add a statement</button>
+      <button id="confirm-profile">Confirm and meet my future self</button>
+      <button id="cancel-edit" class="secondary">Back</button></div>
+  </section>
+
+  <section id="twin" class="panel" hidden>
+    <p class="eyebrow">An imagined workday · two years from now</p>
+    <h2 id="twin-title">Your future self</h2>
+    <details><summary>What this version knows about you</summary><ul id="facts"></ul></details>
+    <div id="twin-thread" class="thread"></div>
+    <button id="open-scene">Meet my future self</button>
+    <div id="twin-controls" hidden>
+      <div class="actions">
+        <button data-action="demo" class="secondary">Show me on my example</button>
+        <button data-action="unchanged" class="secondary">What stays human?</button>
+        <button data-action="challenge" class="secondary">I’m not convinced</button>
+      </div>
+      <form id="message-form"><label>Talk to your future self
+        <textarea id="message" maxlength="600" required rows="3"></textarea></label><button>Send</button></form>
+    </div>
+    <p class="muted">A simulation, not an action-taking assistant. Drafts are not sent or verified.
+      The model sees your confirmed profile and recent exchanges. Edit the profile to make corrections stick.</p>
+    <p id="metrics" class="muted"></p>
+    <div class="actions"><button id="edit-profile" class="secondary">Correct my profile</button>
+      <button id="finish" class="secondary">Finish and reflect</button></div>
+  </section>
+
+  <section id="reflection" class="panel" hidden>
+    <h2>What felt like you?</h2>
+    <form id="reflection-form"><label>What did it get right or wrong? What would you try in real work?
+      <textarea id="reflection-text" maxlength="1000" rows="5"></textarea></label>
+      <button>Finish the session</button></form>
+  </section>
+  <section id="done" class="panel" hidden>
+    <h2>One possible future, not a verdict.</h2>
+    <p id="saved-reflection"></p>
+    <p>Nothing was sent, scheduled or automated. Your reflection stays in this temporary session unless you export it.</p>
+    <button id="export">Save session notes (includes your text)</button>
+  </section>
+</main>
+<footer>Local research demonstrator · No personality score · No career prediction</footer>
+</body>
+</html>

@@ -1,0 +1,16 @@
+# Local configuration — keep the shareable example
+.env
+.env.*
+!.env.example
+
+# Dependencies and logs
+node_modules/
+*.log
+
+# Participant session exports
+session-notes-*.json
+
+# Local model files, if accidentally copied into the project
+.ollama/
+*.gguf
+*.safetensors
