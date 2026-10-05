@@ -174,7 +174,13 @@ export function createApp(model = new OllamaModel()) {
             });
             signal.throwIfAborted();
             // Commit only a completed exchange, never an interrupted half-answer.
-            if (action !== 'open') s.messages.push({ role: 'user', content: userText });
+            if (action !== 'open') {
+              s.messages.push({
+                role: 'user',
+                content: userText,
+                source: action === 'say' ? 'typed' : 'suggestion'
+              });
+            }
             s.messages.push({ role: 'assistant', content: output.text });
             s.metrics = output.metrics;
             await emit({ type: 'done', session: publicSession(s) });
