@@ -234,10 +234,30 @@ test('HTTP flow tracks origins, ignores failed turns and resets style history wi
       body: JSON.stringify(data)
     });
 
-    assert.ok(
-      response.ok,
-      `Unexpected HTTP ${response.status} for ${path}`
-    );
+    if (!response.ok) {
+        const errorBody = await response.text();
+
+        assert.fail(
+            [
+            `POST ${path} returned HTTP ${response.status}`,
+            `Request body: ${JSON.stringify(data, null, 2)}`,
+            `Server response: ${errorBody}`
+            ].join('\n')
+        );
+    }
+
+    // Pacing tests explicitly skip the optional buttons.
+    // The new suite tests generation.
+    if (path === '/api/profile') {
+    const profile = await response.json();
+
+    assert.equal(profile.stage, 'prepare');
+
+    return post('/api/suggestions', {
+        profileVersion: profile.profileVersion,
+        mode: 'skip'
+    });
+    }
 
     return response;
   }

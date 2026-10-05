@@ -9,6 +9,7 @@ import {
 } from './lib/domain.mjs';
 import { profileMessages, twinMessages } from './lib/prompts.mjs';
 import { OllamaModel } from './lib/model.mjs';
+import { generateSuggestions } from './lib/suggestions.mjs';
 
 const STATIC = {
   '/': ['index.html', 'text/html'],
@@ -97,10 +98,23 @@ export function createApp(model = new OllamaModel()) {
         requireThat(sessions.size < 20, 'Too many sessions. Reset an old one or restart the server.', 429);
         const token = randomBytes(32).toString('base64url');
         const s = {
-          name: text(input.name, 'Name or alias', 50, 1), stage: 'intake',
-          answers: [], intake: [{ role: 'assistant', content: QUESTIONS[0] }],
-          sample: null, claims: [], facts: [], messages: [], reflection: '',
-          metrics: null, notice: '', touched: Date.now()
+          name: text(input.name, 'Name or alias', 50, 1),
+          stage: 'intake',
+          answers: [],
+          intake: [
+            { role: 'assistant', content: QUESTIONS[0] }
+          ],
+          sample: null, 
+          claims: [], 
+          facts: [], 
+          messages: [], 
+          reflection: '',
+          profileVersion: 0, 
+          suggestions: [], 
+          suggestionStatus: 'pending',
+          metrics: null, 
+          notice: '', 
+          touched: Date.now()
         };
         sessions.set(token, s);
         return json(res, 201, { token, session: publicSession(s) });
@@ -145,50 +159,193 @@ export function createApp(model = new OllamaModel()) {
         });
       }
       if (path === '/api/profile') {
-        requireThat(['sample', 'review', 'twin'].includes(s.stage), 'Complete the intake first.', 409);
+        requireThat(
+          ['sample', 'review', 'prepare', 'twin'].includes(s.stage),
+          'Complete the intake first.',
+          409
+        );
+
         const facts = confirmedFacts(input);
-        const sample = s.stage === 'sample' && input.sample ? sampleInput(input.sample) : s.sample;
-        s.facts = facts; s.sample = sample;
-        // Explicit correction resets the scene so discarded claims cannot persist in old dialogue.
-        s.messages = []; s.stage = 'twin'; s.metrics = null; s.notice = '';
+        const sample = s.stage === 'sample' && input.sample
+          ? sampleInput(input.sample)
+          : s.sample;
+
+        s.facts = facts;
+        s.sample = sample;
+
+        // Explicit correction resets the scene so discarded claims
+        // cannot persist in old dialogue or old buttons.
+        s.messages = [];
+        s.stage = 'prepare';
+        s.metrics = null;
+        s.notice = '';
+
+        s.profileVersion += 1;
+        s.suggestions = [];
+        s.suggestionStatus = 'pending';
+
         return json(res, 200, publicSession(s));
       }
-      if (path === '/api/twin') {
-        requireThat(s.stage === 'twin', 'Confirm your profile first.', 409);
-        const action = input.action;
-        requireThat(typeof action === 'string' && (action === 'say' || Object.hasOwn(ACTIONS, action)), 'Unknown action.');
-        requireThat((action === 'open') === (s.messages.length === 0), 'Open the scene once, then continue the conversation.', 409);
-        requireThat(s.messages.filter(m => m.role === 'user').length < 8,
-          'This demo is limited to eight exchanges. Finish or edit your profile to restart.', 409);
-        const userText = action === 'say' ? text(input.text, 'Message', 600, 1) : ACTIONS[action];
+
+      if (path === '/api/suggestions') {
+        requireThat(
+          ['prepare', 'twin'].includes(s.stage),
+          'Confirm your profile first.',
+          409
+        );
+
+        requireThat(
+          input.profileVersion === s.profileVersion,
+          'Your profile changed. Use the current profile.',
+          409
+        );
+
+        requireThat(
+          ['generate', 'skip'].includes(input.mode),
+          'Choose generate or skip.'
+        );
+
+        // A completed set, or an explicit skip, is fixed
+        // for this profile version.
+        if (s.stage === 'twin') {
+          return json(res, 200, publicSession(s));
+        }
+
+        if (input.mode === 'skip') {
+          s.suggestions = [];
+          s.suggestionStatus = 'skipped';
+          s.stage = 'twin';
+
+          return json(res, 200, publicSession(s));
+        }
+
         return await useModel(s, res, async signal => {
-          res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8' });
+          const suggestions = await generateSuggestions(model, s, signal);
+
+          signal.throwIfAborted();
+
+          s.suggestions = suggestions;
+          s.suggestionStatus = 'ready';
+          s.stage = 'twin';
+
+          json(res, 200, publicSession(s));
+        });
+      }
+
+      if (path === '/api/twin') {
+        requireThat(
+          s.stage === 'twin',
+          'Confirm your profile, then prepare or explicitly skip the buttons.',
+          409
+        );
+
+        const action = input.action;
+
+        requireThat(
+          typeof action === 'string' &&
+          (
+            ['say', 'suggestion'].includes(action) ||
+            Object.hasOwn(ACTIONS, action)
+          ),
+          'Unknown action.'
+        );
+
+        requireThat(
+          (action === 'open') === (s.messages.length === 0),
+          'Open the scene once, then continue the conversation.',
+          409
+        );
+
+        requireThat(
+          s.messages.filter(m => m.role === 'user').length < 8,
+          'This demo is limited to eight exchanges. Finish or edit your profile to restart.',
+          409
+        );
+
+        let selected;
+
+        if (action === 'suggestion') {
+          selected = s.suggestions.find(
+            item => item.id === input.suggestionId
+          );
+
+          requireThat(
+            selected,
+            'This button is not available for your current profile.',
+            400
+          );
+        }
+
+        // Use the server-stored request, never a prompt supplied
+        // with a button click.
+        const userText = selected
+          ? selected.request
+          : action === 'say'
+            ? text(input.text, 'Message', 600, 1)
+            : ACTIONS[action];
+
+        return await useModel(s, res, async signal => {
+          res.writeHead(200, {
+            'Content-Type': 'application/x-ndjson; charset=utf-8'
+          });
+
           res.flushHeaders();
+
           const emit = async event => {
             signal.throwIfAborted();
-            if (!res.write(JSON.stringify(event) + '\n')) await once(res, 'drain', { signal });
+
+            if (!res.write(JSON.stringify(event) + '\n')) {
+              await once(res, 'drain', { signal });
+            }
           };
+
           try {
-            const output = await model.chat(twinMessages(s, action, userText), {
-              signal, onToken: value => emit({ type: 'token', text: value })
-            });
+            const output = await model.chat(
+              twinMessages(s, action, userText),
+              {
+                signal,
+                onToken: value => emit({
+                  type: 'token',
+                  text: value
+                })
+              }
+            );
+
             signal.throwIfAborted();
-            // Commit only a completed exchange, never an interrupted half-answer.
+
+            // Commit only a completed exchange.
             if (action !== 'open') {
               s.messages.push({
                 role: 'user',
-                content: userText,
-                source: action === 'say' ? 'typed' : 'suggestion'
+                content: selected ? selected.label : userText,
+                source: action === 'say' ? 'typed' : 'suggestion',
+                ...(selected ? { request: selected.request } : {})
               });
             }
-            s.messages.push({ role: 'assistant', content: output.text });
-            s.metrics = output.metrics;
-            await emit({ type: 'done', session: publicSession(s) });
-          } catch (error) {
-            if (!signal.aborted && !res.destroyed) await emit({
-              type: 'error', error: error instanceof AppError ? error.message : 'Generation was interrupted. Retry.'
+
+            s.messages.push({
+              role: 'assistant',
+              content: output.text
             });
-          } finally { res.end(); }
+
+            s.metrics = output.metrics;
+
+            await emit({
+              type: 'done',
+              session: publicSession(s)
+            });
+          } catch (error) {
+            if (!signal.aborted && !res.destroyed) {
+              await emit({
+                type: 'error',
+                error: error instanceof AppError
+                  ? error.message
+                  : 'Generation was interrupted. Retry.'
+              });
+            }
+          } finally {
+            res.end();
+          }
         });
       }
       if (path === '/api/finish') {

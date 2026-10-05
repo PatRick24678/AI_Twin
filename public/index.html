@@ -65,6 +65,32 @@
       <button id="confirm-profile">Confirm and meet my future self</button>
       <button id="cancel-edit" class="secondary">Back</button></div>
   </section>
+  
+  <section id="prepare" class="panel" hidden>
+    <h2>Preparing your conversation.</h2>
+
+    <p>
+      The local model is creating three starting points from the profile
+      you confirmed. They will stay the same during this conversation.
+    </p>
+
+    <p class="muted">
+      If preparation fails, retry or continue without buttons.
+      Your profile is still saved.
+    </p>
+
+    <div class="actions">
+      <button id="retry-suggestions">Generate / retry</button>
+
+      <button id="skip-suggestions" class="secondary">
+        Continue without buttons
+      </button>
+
+      <button id="prepare-edit" class="secondary">
+        Correct my profile
+      </button>
+    </div>
+  </section>
 
   <section id="twin" class="panel" hidden>
     <p class="eyebrow">An imagined workday · two years from now</p>
@@ -73,11 +99,17 @@
     <div id="twin-thread" class="thread"></div>
     <button id="open-scene">Meet my future self</button>
     <div id="twin-controls" hidden>
-      <div class="actions">
-        <button data-action="demo" class="secondary">Show me on my example</button>
-        <button data-action="unchanged" class="secondary">What stays human?</button>
-        <button data-action="challenge" class="secondary">I’m not convinced</button>
-      </div>
+    <p class="muted">
+      Personal starting points — or ask your own question.
+    </p>
+
+    <div
+      id="suggestions"
+      class="actions"
+      aria-label="Personal conversation starters"
+    ></div>
+
+    <p id="suggestion-note" class="muted" hidden></p>
       <form id="message-form"><label>Talk to your future self
         <textarea id="message" maxlength="600" required rows="3"></textarea></label><button>Send</button></form>
     </div>

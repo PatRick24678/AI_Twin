@@ -33,11 +33,40 @@ async function fixture(t, model = new FakeModel()) {
   const base = `http://127.0.0.1:${server.address().port}`;
   async function call(path, data, token = '', method = 'POST', extraHeaders = {}) {
     const response = await fetch(base + path, {
-      method, headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1',
-        Authorization: `Bearer ${token}`, ...extraHeaders },
-      ...(data === undefined ? {} : { body: JSON.stringify(data) })
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Future-Self': '1',
+        Authorization: `Bearer ${token}`,
+        ...extraHeaders
+      },
+      ...(data === undefined
+        ? {}
+        : { body: JSON.stringify(data) })
     });
-    return { status: response.status, body: await response.json() };
+
+    const result = {
+      status: response.status,
+      body: await response.json()
+    };
+
+    // These existing tests exercise the conversation, not button generation.
+    // After profile confirmation, explicitly skip the buttons so the tests
+    // can continue into the twin conversation.
+    if (path === '/api/profile' && response.ok) {
+      assert.equal(result.body.stage, 'prepare');
+
+      return call(
+        '/api/suggestions',
+        {
+          profileVersion: result.body.profileVersion,
+          mode: 'skip'
+        },
+        token
+      );
+    }
+
+    return result;
   }
   async function seed(name = 'Taylor') {
     const created = await call('/api/session', { name, consent: true });

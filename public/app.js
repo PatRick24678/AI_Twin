@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '';
-const stages = ['welcome', 'intake', 'sample', 'review', 'twin', 'reflection', 'done'];
+const stages = ['welcome', 'intake', 'sample', 'review', 'prepare', 'twin', 'reflection', 'done'];
 function errorMessage(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 async function api(path, data, signal, method = 'POST', auth = token) {
   const response = await fetch(path, {
@@ -42,10 +42,37 @@ function thread(id, messages, label) {
   messages.forEach(message => bubble(container, message, label));
   container.scrollTop = container.scrollHeight;
 }
+function renderSuggestions() {
+  const container = $('suggestions');
+  container.replaceChildren();
+
+  for (const suggestion of session?.suggestions || []) {
+    const button = document.createElement('button');
+
+    button.type = 'button';
+    button.className = 'secondary';
+    button.textContent = suggestion.label;
+    button.title = suggestion.request;
+    button.disabled = Boolean(job);
+
+    button.onclick = () => run(signal =>
+      talk('suggestion', '', signal, suggestion.id)
+    );
+
+    container.append(button);
+  }
+
+  $('suggestion-note').hidden =
+    session?.suggestionStatus !== 'skipped';
+
+  $('suggestion-note').textContent =
+    'You chose to continue without shortcuts. Ask your own question below.';
+}
 function render() {
   const stage = localStage || session?.stage || 'welcome';
   stages.forEach(id => { $(id).hidden = id !== stage; });
   $('reset').hidden = !session;
+  renderSuggestions();
   if (!session) return;
   thread('intake-thread', session.intake, 'A question for you');
   thread('twin-thread', session.messages, 'Possible future self');
@@ -100,31 +127,117 @@ async function* events(body) {
     if (buffer.trim()) yield JSON.parse(buffer);
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
-async function talk(action, text, signal) {
-  pending = ''; render();
-  if (action !== 'open') bubble($('twin-thread'), {
-    role: 'user', content: text || ({ demo: 'Show me on my example.', unchanged: 'What stays human?', challenge: 'I’m not convinced.' })[action]
-  }, 'You');
-  const paragraph = bubble($('twin-thread'), { role: 'assistant', content: '…' }, 'Possible future self');
+async function prepareConversation(signal, mode = 'generate') {
+  $('status').textContent = mode === 'generate'
+    ? 'Generating three personal starting points…'
+    : 'Continuing without buttons…';
+
+  session = await api(
+    '/api/suggestions',
+    {
+      profileVersion: session.profileVersion,
+      mode
+    },
+    signal
+  );
+
+  localStage = '';
+  render();
+
+  $('status').textContent =
+    'Your future self is preparing its opening…';
+
+  if (session.messages.length === 0) {
+    await talk('open', '', signal);
+  }
+}
+async function talk(action, text, signal, suggestionId = '') {
+  const selected = action === 'suggestion'
+    ? session.suggestions.find(item => item.id === suggestionId)
+    : null;
+
+  if (action === 'suggestion' && !selected) {
+    throw new Error('This button is no longer available.');
+  }
+
+  pending = '';
+  render();
+
+  if (action !== 'open') {
+    bubble(
+      $('twin-thread'),
+      {
+        role: 'user',
+        content: selected?.label || text
+      },
+      'You'
+    );
+  }
+
+  const paragraph = bubble(
+    $('twin-thread'),
+    {
+      role: 'assistant',
+      content: '…'
+    },
+    'Possible future self'
+  );
+
   const response = await fetch('/api/twin', {
-    method: 'POST', signal,
-    headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ action, text })
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Future-Self': '1',
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      action,
+      text,
+      suggestionId
+    })
   });
-  if (!response.ok) throw new Error((await response.json()).error || 'Generation failed.');
+
+  if (!response.ok) {
+    throw new Error(
+      (await response.json()).error || 'Generation failed.'
+    );
+  }
+
   let complete = false;
+
   for await (const event of events(response.body)) {
     signal.throwIfAborted();
+
     if (event.type === 'token') {
-      pending += event.text; paragraph.textContent = pending;
-      $('twin-thread').scrollTop = $('twin-thread').scrollHeight;
+      pending += event.text;
+      paragraph.textContent = pending;
+
+      $('twin-thread').scrollTop =
+        $('twin-thread').scrollHeight;
     }
-    if (event.type === 'error') throw new Error(event.error);
-    if (event.type === 'done') { session = event.session; complete = true; }
+
+    if (event.type === 'error') {
+      throw new Error(event.error);
+    }
+
+    if (event.type === 'done') {
+      session = event.session;
+      complete = true;
+    }
   }
+
   signal.throwIfAborted();
-  if (!complete) throw new Error('The stream was interrupted. Retry your message.');
-  $('message').value = ''; pending = ''; render();
+
+  if (!complete) {
+    throw new Error(
+      'The stream was interrupted. Retry your message.'
+    );
+  }
+
+  $('message').value = '';
+  pending = '';
+  render();
 }
 $('welcome-form').onsubmit = event => {
   event.preventDefault();
@@ -161,15 +274,31 @@ $('add-claim').onclick = () => {
   if ($('claims').children.length < 6) addClaim();
 };
 $('confirm-profile').onclick = () => run(async signal => {
-  const facts = [...$('claims').querySelectorAll('textarea')].map(el => el.value.trim()).filter(Boolean);
-  session = await api('/api/profile', { facts, sample: readSample() }, signal);
-  localStage = ''; render();
-  await talk('open', '', signal);
+  const facts = [...$('claims').querySelectorAll('textarea')]
+    .map(el => el.value.trim())
+    .filter(Boolean);
+
+  session = await api(
+    '/api/profile',
+    {
+      facts,
+      sample: readSample()
+    },
+    signal
+  );
+
+  localStage = '';
+  render();
+
+  await prepareConversation(signal);
 });
-$('open-scene').onclick = () => run(signal => talk('open', '', signal));
-document.querySelectorAll('[data-action]').forEach(button => {
-  button.onclick = () => run(signal => talk(button.dataset.action, '', signal));
-});
+$('retry-suggestions').onclick = () =>
+  run(signal => prepareConversation(signal));
+
+$('skip-suggestions').onclick = () =>
+  run(signal => prepareConversation(signal, 'skip'));
+
+$('prepare-edit').onclick = () => editProfile();
 $('message-form').onsubmit = event => {
   event.preventDefault(); run(signal => talk('say', $('message').value, signal));
 };
