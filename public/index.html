@@ -14,7 +14,34 @@
   <p class="eyebrow">A possible future. Still your way of working.</p>
   <p id="health" class="muted">Checking the local model…</p>
   <p id="error" role="alert" hidden></p>
-  <p id="status" role="status" aria-live="polite"></p>
+  <div
+    id="loading-indicator"
+    class="loading-indicator"
+    aria-hidden="true"
+    hidden
+  >
+    <svg
+      class="loading-hourglass"
+      viewBox="0 0 24 24"
+      focusable="false"
+    >
+      <path d="M6 2h12M6 22h12M7 2v5l5 5-5 5v5M17 2v5l-5 5 5 5v5" />
+      <path d="M8 6h8M8 18h8" />
+    </svg>
+
+    <div>
+      <p id="loading-title"></p>
+      <p id="loading-detail"></p>
+    </div>
+  </div>
+
+  <!-- Kept in the accessibility tree so status changes can be announced. -->
+  <p
+    id="status"
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+  ></p>
 
   <section id="welcome" class="panel">
     <h1>Meet a workday<br>that could be yours.</h1>

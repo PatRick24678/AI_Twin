@@ -14,19 +14,56 @@ async function api(path, data, signal, method = 'POST', auth = token) {
   if (!response.ok) throw new Error(result.error || 'The request failed.');
   return result;
 }
-function busy() {
-  document.querySelectorAll('button,input,textarea').forEach(el => { el.disabled = Boolean(job); });
-  $('reset').disabled = false;
-  $('status').textContent = job ? 'Working locally… the first model response may take longer.' : '';
+function setLoading(title, detail = 'Please wait while this step finishes.') {
+  if (!job) return;
+
+  $('loading-title').textContent = title;
+  $('loading-detail').textContent = detail;
+  $('status').textContent = `${title} ${detail}`;
 }
+
+function busy() {
+  const waiting = Boolean(job);
+
+  document.querySelectorAll('button,input,textarea').forEach(el => {
+    el.disabled = waiting;
+  });
+
+  // Do not trap the participant in a loading screen.
+  $('reset').disabled = false;
+  $('loading-indicator').hidden = !waiting;
+
+  if (!waiting) {
+    $('loading-title').textContent = '';
+    $('loading-detail').textContent = '';
+    $('status').textContent = '';
+  }
+}
+
 async function run(work) {
   if (job) return;
-  const controller = new AbortController(); job = controller;
-  errorMessage(); busy();
-  try { await work(controller.signal); }
-  catch (error) { if (!controller.signal.aborted) errorMessage(error.message); }
-  finally {
-    if (job === controller) { job = null; pending = ''; render(); busy(); }
+
+  const controller = new AbortController();
+  job = controller;
+
+  errorMessage();
+  busy();
+  setLoading('Working locally…');
+
+  try {
+    await work(controller.signal);
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      errorMessage(error.message);
+    }
+  } finally {
+    // A reset can replace or clear job. Do not touch a newer request.
+    if (job === controller) {
+      job = null;
+      pending = '';
+      render();
+      busy();
+    }
   }
 }
 function bubble(container, message, label) {
@@ -128,30 +165,34 @@ async function* events(body) {
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 async function prepareConversation(signal, mode = 'generate') {
-  $('status').textContent = mode === 'generate'
-    ? 'Generating three personal starting points…'
-    : 'Continuing without buttons…';
-
-  session = await api(
-    '/api/suggestions',
-    {
-      profileVersion: session.profileVersion,
-      mode
-    },
-    signal
+  setLoading(
+    mode === 'generate'
+      ? 'Creating your personal starting points…'
+      : 'Continuing without buttons…',
+    mode === 'generate'
+      ? 'Choosing three topics from the profile you confirmed.'
+      : 'Your confirmed profile will still guide the conversation.'
   );
+
+  session = await api('/api/suggestions', {
+    profileVersion: session.profileVersion,
+    mode
+  }, signal);
 
   localStage = '';
   render();
-
-  $('status').textContent =
-    'Your future self is preparing its opening…';
 
   if (session.messages.length === 0) {
     await talk('open', '', signal);
   }
 }
 async function talk(action, text, signal, suggestionId = '') {
+    setLoading(
+    action === 'open'
+      ? 'Starting your conversation…'
+      : 'Your future self is preparing a reply…',
+    'Waiting for the first words from the local model.'
+  );
   const selected = action === 'suggestion'
     ? session.suggestions.find(item => item.id === suggestionId)
     : null;
@@ -210,12 +251,17 @@ async function talk(action, text, signal, suggestionId = '') {
     signal.throwIfAborted();
 
     if (event.type === 'token') {
-      pending += event.text;
-      paragraph.textContent = pending;
+      if (event.text && !pending) {
+        setLoading(
+          'Your future self is replying…',
+          'The answer is appearing below as it is generated.'
+        );
+      }
 
-      $('twin-thread').scrollTop =
-        $('twin-thread').scrollHeight;
-    }
+  pending += event.text;
+  paragraph.textContent = pending;
+  $('twin-thread').scrollTop = $('twin-thread').scrollHeight;
+}
 
     if (event.type === 'error') {
       throw new Error(event.error);
@@ -262,7 +308,13 @@ function readSample() {
 }
 $('sample-form').onsubmit = event => {
   event.preventDefault();
+
   run(async signal => {
+    setLoading(
+      'Building your profile…',
+      'Using your answers and optional work sample. You will review the result next.'
+    );
+
     session = await api('/api/sample', readSample(), signal);
     editProfile();
   });
