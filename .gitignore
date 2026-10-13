@@ -14,3 +14,8 @@ session-notes-*.json
 .ollama/
 *.gguf
 *.safetensors
+
+# Secret files accidentally copied into the project
+secrets.env
+*.secrets.env
+.secrets/
