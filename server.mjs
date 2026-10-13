@@ -8,7 +8,7 @@ import {
   sampleInput, sourcesFor, groundedClaims, confirmedFacts, publicSession
 } from './lib/domain.mjs';
 import { profileMessages, twinMessages } from './lib/prompts.mjs';
-import { OllamaModel } from './lib/model.mjs';
+import { AnthropicModel } from './lib/anthropic-model.mjs';
 import { generateSuggestions } from './lib/suggestions.mjs';
 
 const STATIC = {
@@ -35,7 +35,7 @@ async function body(req) {
     return value;
   } catch { throw new AppError(400, 'Invalid JSON object.'); }
 }
-export function createApp(model = new OllamaModel()) {
+export function createApp(model = new AnthropicModel()) {
   const sessions = new Map();
   const ttl = 30 * 60 * 1000;
   let modelBusy = false; // One generation at a time for a laptop demo.
@@ -46,7 +46,7 @@ export function createApp(model = new OllamaModel()) {
   }
   const timer = setInterval(sweep, 60000).unref();
   async function useModel(s, res, work) {
-    requireThat(!modelBusy, 'The local model is busy. Try again shortly.', 429);
+    requireThat(!modelBusy, 'Another AI request is running. Try again shortly.', 429);
     modelBusy = true;
     const controller = new AbortController();
     s.controller = controller;
@@ -86,7 +86,7 @@ export function createApp(model = new OllamaModel()) {
       if (method === 'GET' && path === '/api/health') {
         let result;
         try { result = await model.health(); }
-        catch { result = { ok: false, error: 'Start Ollama and check the configured local model.' }; }
+        catch { result = { ok: false, error: 'Could not check Claude access. Check the key, model and connection.' }; }
         return json(res, result.ok ? 200 : 503, result);
       }
       requireThat(path.startsWith('/api/'), 'Not found.', 404);
@@ -358,7 +358,7 @@ export function createApp(model = new OllamaModel()) {
     } catch (error) {
       if (!res.headersSent && !res.destroyed) json(res,
         error instanceof AppError ? error.status : 500,
-        { error: error instanceof AppError ? error.message : 'Request failed. Check that the local services are running.' });
+        { error: error instanceof AppError ? error.message : 'Request failed. Check the application setup and connection.' });
       else if (!res.writableEnded) res.end();
     }
   });

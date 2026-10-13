@@ -48,7 +48,7 @@ async function run(work) {
 
   errorMessage();
   busy();
-  setLoading('Working locally…');
+  setLoading('Working…');
 
   try {
     await work(controller.signal);
@@ -121,7 +121,7 @@ function render() {
   $('open-scene').hidden = session.messages.length > 0;
   $('twin-controls').hidden = session.messages.length === 0;
   const m = session.metrics;
-  $('metrics').textContent = m ? `First text: ${m.firstTokenMs ?? '—'} ms · Total: ${m.totalMs} ms · Generation: ${m.tokensPerSecond ?? '—'} tokens/s` : '';
+  $('metrics').textContent = m ? `Last request — first text: ${m.firstTokenMs ?? '—'} ms · Total: ${m.totalMs} ms · Input: ${m.inputTokens ?? '—'} tokens · Output: ${m.outputTokens ?? '—'} tokens` : '';
   $('saved-reflection').textContent = session.reflection || 'No reflection entered.';
 }
 function addClaim(value = '', evidence = '') {
@@ -191,7 +191,7 @@ async function talk(action, text, signal, suggestionId = '') {
     action === 'open'
       ? 'Starting your conversation…'
       : 'Your future self is preparing a reply…',
-    'Waiting for the first words from the local model.'
+    'Waiting for the first words from the model.'
   );
   const selected = action === 'suggestion'
     ? session.suggestions.find(item => item.id === suggestionId)
@@ -394,7 +394,7 @@ async function initialize() {
       label.append(radio, title, example); $('examples').append(label);
     }
     const health = await api('/api/health', undefined, undefined, 'GET');
-    $('health').textContent = `Local model available: ${health.model}`;
+    $('health').textContent = `Claude model access available: ${health.model}`;
   } catch (error) { $('health').textContent = `Model not ready: ${error.message}`; }
 }
 render(); initialize();

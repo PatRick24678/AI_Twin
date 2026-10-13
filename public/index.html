@@ -51,8 +51,13 @@
     <form id="welcome-form">
       <label>Name or alias <input id="name" maxlength="50" required autocomplete="off"></label>
       <label class="check"><input id="consent" type="checkbox" required>
-        I understand this is a prototype. My text stays in this local app and its local model;
-        the app does not train on it. Reset removes the session; inactive sessions expire after 30 minutes.</label>
+        I understand this is a prototype using Anthropic's hosted Claude API.
+        My answers, optional sample and relevant conversation are sent to
+        Anthropic for processing.
+        I will use fictional, non-confidential material while this version
+        is being tested.
+        Reset clears this application's session, not any provider-side records.
+        Inactive application sessions expire after about 30 minutes.</label>
       <button>Start the experience</button>
     </form>
     <p class="muted">English, text-first prototype. No login. Refreshing starts a new browser session.</p>
@@ -97,7 +102,7 @@
     <h2>Preparing your conversation.</h2>
 
     <p>
-      The local model is creating three starting points from the profile
+      Claude is creating three starting points from the profile
       you confirmed. They will stay the same during this conversation.
     </p>
 
@@ -160,6 +165,6 @@
     <button id="export">Save session notes (includes your text)</button>
   </section>
 </main>
-<footer>Local research demonstrator · No personality score · No career prediction</footer>
+<footer>Private development prototype · Hosted Claude inference · No career prediction</footer>
 </body>
 </html>
