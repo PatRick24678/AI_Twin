@@ -1,4 +1,5 @@
 # Tatoma Future Self — local prototype
+[ALL WORKS & DESCRIPTIONS SUBJECT TO CHANGE]
 
 An English, text-first research demonstrator. It uses one downloaded Ollama model, not a separate trained model per participant.
 
