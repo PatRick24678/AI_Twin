@@ -1,3 +1,4 @@
+import { withInterviewFixture, completeTestInterview } from '../test-support/interview-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -27,54 +28,31 @@ class FakeModel {
   }
 }
 async function fixture(t, model = new FakeModel()) {
-  const server = createApp(model);
+  const server = createApp(withInterviewFixture(model));
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${server.address().port}`;
   async function call(path, data, token = '', method = 'POST', extraHeaders = {}) {
     const response = await fetch(base + path, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Future-Self': '1',
-        Authorization: `Bearer ${token}`,
-        ...extraHeaders
-      },
-      ...(data === undefined
-        ? {}
-        : { body: JSON.stringify(data) })
+      method, headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1',
+        Authorization: `Bearer ${token}`, ...extraHeaders },
+      ...(data === undefined ? {} : { body: JSON.stringify(data) })
     });
-
-    const result = {
-      status: response.status,
-      body: await response.json()
-    };
-
-    // These existing tests exercise the conversation, not button generation.
-    // After profile confirmation, explicitly skip the buttons so the tests
-    // can continue into the twin conversation.
+    const result = { status: response.status, body: await response.json() };
+    // These existing tests exercise chat, not button generation (tested separately).
     if (path === '/api/profile' && response.ok) {
       assert.equal(result.body.stage, 'prepare');
-
-      return call(
-        '/api/suggestions',
-        {
-          profileVersion: result.body.profileVersion,
-          mode: 'skip'
-        },
-        token
-      );
+      return call('/api/suggestions', {
+        profileVersion: result.body.profileVersion, mode: 'skip'
+      }, token);
     }
-
     return result;
   }
   async function seed(name = 'Taylor') {
     const created = await call('/api/session', { name, consent: true });
     const token = created.body.token;
-    for (const answer of ['I coordinate projects.', 'I dislike chasing updates.',
-      'I prefer concise writing.', 'I enjoy client conversations.']) {
-      assert.equal((await call('/api/answer', { text: answer }, token)).status, 200);
-    }
+    await completeTestInterview(base, token, ['I coordinate projects.', 'I dislike chasing updates.',
+      'I prefer concise writing.', 'I enjoy client conversations.']);
     return token;
   }
   async function stream(token, action = 'open', text = '') {
@@ -111,7 +89,8 @@ test('cannot bypass intake or confirmation; input limits enforced', async t => {
   const token = created.body.token;
   assert.equal((await call('/api/twin', { action: 'open' }, token)).status, 409);
   assert.equal((await call('/api/profile', { facts: ['a', 'b'] }, token)).status, 409);
-  assert.equal((await call('/api/answer', { text: 'x'.repeat(601) }, token)).status, 400);
+  const opened = await call('/api/interview/next', { requestId: created.body.session.interview.requestId }, token);
+  assert.equal((await call('/api/answer', { questionId: opened.body.interview.questionId, text: 'x'.repeat(3001) }, token)).status, 400);
   assert.equal((await call('/api/session', { name: 'A', consent: false })).status, 400);
   const ready = await seed();
   assert.equal((await call('/api/profile', { facts: ['one'] }, ready)).status, 400);

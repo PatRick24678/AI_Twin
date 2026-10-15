@@ -4,12 +4,18 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { once } from 'node:events';
 import {
-  AppError, requireThat, text, QUESTIONS, EXAMPLES, PROFILE_SCHEMA, ACTIONS,
+  AppError, requireThat, text, EXAMPLES, PROFILE_SCHEMA, ACTIONS,
   sampleInput, sourcesFor, groundedClaims, confirmedFacts, publicSession
 } from './lib/domain.mjs';
 import { profileMessages, twinMessages } from './lib/prompts.mjs';
 import { AnthropicModel } from './lib/anthropic-model.mjs';
 import { generateSuggestions } from './lib/suggestions.mjs';
+import { createInterview, recordInterviewInput } from './lib/interview-state.mjs';
+import { InterviewError, INTERVIEW_LIMITS } from './lib/interview-contract.mjs';
+import {
+  INTERVIEW_BUDGET, newInterviewUsage, advanceInterview, canRetryInterview,
+  recordControlledAnswer, explicitInterviewControl, endAfterProcessingLimit
+} from './lib/interviewer.mjs';
 
 const STATIC = {
   '/': ['index.html', 'text/html'],
@@ -38,7 +44,7 @@ async function body(req) {
 export function createApp(model = new AnthropicModel()) {
   const sessions = new Map();
   const ttl = 30 * 60 * 1000;
-  let modelBusy = false; // One generation at a time for a laptop demo.
+  let modelBusy = false; // Keep one generation at a time for this private development prototype.
   function sweep() {
     for (const [token, s] of sessions) {
       if (Date.now() - s.touched > ttl) { s.controller?.abort(); sessions.delete(token); }
@@ -58,6 +64,46 @@ export function createApp(model = new AnthropicModel()) {
       delete s.controller;
       s.touched = Date.now();
       modelBusy = false;
+    }
+  }
+  function syncInterview(s) {
+    s.answers = s.interview.messages
+      .filter(message => message.role === 'user' && message.kind === 'answer')
+      .map(message => message.text);
+    s.intake = s.interview.messages.map(message => ({
+      role: message.role,
+      content: message.kind === 'skip'
+        ? message.displayText || 'Skipped this question.' : message.text
+    }));
+    s.interviewRetryAllowed = canRetryInterview(s.interview, s.interviewUsage);
+  }
+  async function interviewResponse(s, res, signal) {
+    const pending = s.interview;
+    try {
+      const result = await advanceInterview(model, pending, s.interviewUsage, signal);
+      signal.throwIfAborted();
+      requireThat(s.interview === pending, 'The interview changed while preparing this response.', 409);
+      s.interview = result.state;
+      s.metrics = result.metrics;
+      syncInterview(s);
+      json(res, 200, publicSession(s));
+    } catch (error) {
+      if (res.destroyed) return;
+      if (signal.aborted) {
+        if (!res.writableEnded) json(res, 409, { error: 'The interview request was cancelled.' });
+        return;
+      }
+      // An accepted answer/skip is retained on failure. Retry generation, not input.
+      if (error.status === 413 || !canRetryInterview(s.interview, s.interviewUsage)) {
+        s.interview = endAfterProcessingLimit(s.interview,
+          error.status === 413 ? 'context_limit' : 'processing_limit');
+      }
+      syncInterview(s);
+      json(res, error instanceof AppError ? error.status : 502, {
+        error: error instanceof AppError ? error.message :
+          'Could not prepare the next interview turn. Your answer is kept; retry the response.',
+        session: publicSession(s)
+      });
     }
   }
   const server = http.createServer(async (req, res) => {
@@ -98,23 +144,12 @@ export function createApp(model = new AnthropicModel()) {
         requireThat(sessions.size < 20, 'Too many sessions. Reset an old one or restart the server.', 429);
         const token = randomBytes(32).toString('base64url');
         const s = {
-          name: text(input.name, 'Name or alias', 50, 1),
-          stage: 'intake',
-          answers: [],
-          intake: [
-            { role: 'assistant', content: QUESTIONS[0] }
-          ],
-          sample: null, 
-          claims: [], 
-          facts: [], 
-          messages: [], 
-          reflection: '',
-          profileVersion: 0, 
-          suggestions: [], 
-          suggestionStatus: 'pending',
-          metrics: null, 
-          notice: '', 
-          touched: Date.now()
+          name: text(input.name, 'Name or alias', 50, 1), stage: 'intake',
+          answers: [], intake: [], interview: createInterview(),
+          interviewUsage: newInterviewUsage(), interviewRetryAllowed: true,
+          sample: null, claims: [], facts: [], messages: [], reflection: '',
+          profileVersion: 0, suggestions: [], suggestionStatus: 'pending',
+          metrics: null, notice: '', touched: Date.now()
         };
         sessions.set(token, s);
         return json(res, 201, { token, session: publicSession(s) });
@@ -132,18 +167,53 @@ export function createApp(model = new AnthropicModel()) {
       const input = await body(req);
       requireThat(sessions.get(token) === s, 'Session was reset. Start again.', 401);
       requireThat(!s.controller, 'A response is already being generated.', 409);
+      if (path === '/api/interview/next') {
+        requireThat(s.stage === 'intake' && s.interview.status === 'thinking',
+          'There is no interview response waiting to be generated.', 409);
+        requireThat(input.requestId === s.interview.requestId,
+          'This interview request is out of date. Refresh the session state.', 409);
+        return await useModel(s, res, signal => interviewResponse(s, res, signal));
+      }
       if (path === '/api/answer') {
-        requireThat(s.stage === 'intake', 'The intake is already complete.', 409);
-        const answer = text(input.text, 'Answer', 600, 1);
-        s.answers.push(answer);
-        s.intake.push({ role: 'user', content: answer });
-        if (s.answers.length === QUESTIONS.length) s.stage = 'sample';
-        else s.intake.push({ role: 'assistant', content: QUESTIONS[s.answers.length] });
+        requireThat(s.stage === 'intake' && s.interview.status === 'waiting',
+          'Wait for the question, retry a pending response, or finish the completed interview.', 409);
+        requireThat(typeof input.questionId === 'string' && input.questionId === s.interview.activeQuestion.id,
+          'This answer belongs to an old or different question.', 409);
+        const kind = input.kind || 'answer';
+        requireThat(['answer', 'skip'].includes(kind), 'Choose answer or skip.');
+        const answer = kind === 'answer'
+          ? text(input.text, 'Answer', INTERVIEW_LIMITS.answerCharacters, 1) : '';
+        requireThat(kind !== 'skip' || !input.text, 'A skip must not contain answer text.');
+        const control = kind === 'answer' ? explicitInterviewControl(answer) : 'skip';
+        if (!control) {
+          const used = s.answers.reduce((n, value) => n + value.length, 0);
+          requireThat(used + answer.length <= INTERVIEW_BUDGET.answerCharactersTotal,
+            'This interview has reached its text allowance. Shorten this answer, skip, or type "stop".');
+        }
+        if (control === 'stop') {
+          s.interview = recordControlledAnswer(s.interview, answer);
+          syncInterview(s);
+          return json(res, 200, publicSession(s));
+        }
+        return await useModel(s, res, async signal => {
+          s.interview = kind === 'skip'
+            ? recordInterviewInput(s.interview, { kind: 'skip' })
+            : recordControlledAnswer(s.interview, answer);
+          syncInterview(s);
+          await interviewResponse(s, res, signal);
+        });
+      }
+      if (path === '/api/interview/continue') {
+        requireThat(s.stage === 'intake' && s.interview.status === 'complete',
+          'The interview has not finished yet.', 409);
+        s.stage = 'sample';
         return json(res, 200, publicSession(s));
       }
       if (path === '/api/sample') {
         requireThat(s.stage === 'sample', 'Complete the intake first.', 409);
         const sample = sampleInput(input);
+        requireThat(sourcesFor({ ...s, sample }).length > 0,
+          'There is no supported profile material yet. Add your own profile statements or restart; we will not invent a professional.', 422);
         return await useModel(s, res, async signal => {
           s.sample = sample;
           const output = await model.chat(profileMessages(s), { schema: PROFILE_SCHEMA, signal });
@@ -159,161 +229,61 @@ export function createApp(model = new AnthropicModel()) {
         });
       }
       if (path === '/api/profile') {
-        requireThat(
-          ['sample', 'review', 'prepare', 'twin'].includes(s.stage),
-          'Complete the intake first.',
-          409
-        );
-
+        requireThat(['sample', 'review', 'prepare', 'twin'].includes(s.stage), 'Complete the intake first.', 409);
         const facts = confirmedFacts(input);
-        const sample = s.stage === 'sample' && input.sample
-          ? sampleInput(input.sample)
-          : s.sample;
-
-        s.facts = facts;
-        s.sample = sample;
-
-        // Explicit correction resets the scene so discarded claims
-        // cannot persist in old dialogue or old buttons.
-        s.messages = [];
-        s.stage = 'prepare';
-        s.metrics = null;
-        s.notice = '';
-
+        const sample = s.stage === 'sample' && input.sample ? sampleInput(input.sample) : s.sample;
+        s.facts = facts; s.sample = sample;
+        // Explicit correction resets the scene so discarded claims cannot persist in old dialogue.
+        s.messages = []; s.stage = 'prepare'; s.metrics = null; s.notice = '';
         s.profileVersion += 1;
-        s.suggestions = [];
-        s.suggestionStatus = 'pending';
-
+        s.suggestions = []; s.suggestionStatus = 'pending';
         return json(res, 200, publicSession(s));
       }
-
       if (path === '/api/suggestions') {
-        requireThat(
-          ['prepare', 'twin'].includes(s.stage),
-          'Confirm your profile first.',
-          409
-        );
-
-        requireThat(
-          input.profileVersion === s.profileVersion,
-          'Your profile changed. Use the current profile.',
-          409
-        );
-
-        requireThat(
-          ['generate', 'skip'].includes(input.mode),
-          'Choose generate or skip.'
-        );
-
-        // A completed set, or an explicit skip, is fixed
-        // for this profile version.
-        if (s.stage === 'twin') {
-          return json(res, 200, publicSession(s));
-        }
-
+        requireThat(['prepare', 'twin'].includes(s.stage), 'Confirm your profile first.', 409);
+        requireThat(input.profileVersion === s.profileVersion, 'Your profile changed. Use the current profile.', 409);
+        requireThat(['generate', 'skip'].includes(input.mode), 'Choose generate or skip.');
+        // A completed set (or explicit skip) is fixed for this profile version.
+        if (s.stage === 'twin') return json(res, 200, publicSession(s));
         if (input.mode === 'skip') {
-          s.suggestions = [];
-          s.suggestionStatus = 'skipped';
-          s.stage = 'twin';
-
+          s.suggestions = []; s.suggestionStatus = 'skipped'; s.stage = 'twin';
           return json(res, 200, publicSession(s));
         }
-
         return await useModel(s, res, async signal => {
           const suggestions = await generateSuggestions(model, s, signal);
-
           signal.throwIfAborted();
-
-          s.suggestions = suggestions;
-          s.suggestionStatus = 'ready';
-          s.stage = 'twin';
-
+          s.suggestions = suggestions; s.suggestionStatus = 'ready'; s.stage = 'twin';
           json(res, 200, publicSession(s));
         });
       }
-
       if (path === '/api/twin') {
-        requireThat(
-          s.stage === 'twin',
-          'Confirm your profile, then prepare or explicitly skip the buttons.',
-          409
-        );
-
+        requireThat(s.stage === 'twin', 'Confirm your profile, then prepare or explicitly skip the buttons.', 409);
         const action = input.action;
-
-        requireThat(
-          typeof action === 'string' &&
-          (
-            ['say', 'suggestion'].includes(action) ||
-            Object.hasOwn(ACTIONS, action)
-          ),
-          'Unknown action.'
-        );
-
-        requireThat(
-          (action === 'open') === (s.messages.length === 0),
-          'Open the scene once, then continue the conversation.',
-          409
-        );
-
-        requireThat(
-          s.messages.filter(m => m.role === 'user').length < 8,
-          'This demo is limited to eight exchanges. Finish or edit your profile to restart.',
-          409
-        );
-
+        requireThat(typeof action === 'string' && (['say', 'suggestion'].includes(action) || Object.hasOwn(ACTIONS, action)), 'Unknown action.');
+        requireThat((action === 'open') === (s.messages.length === 0), 'Open the scene once, then continue the conversation.', 409);
+        requireThat(s.messages.filter(m => m.role === 'user').length < 8,
+          'This demo is limited to eight exchanges. Finish or edit your profile to restart.', 409);
         let selected;
-
         if (action === 'suggestion') {
-          selected = s.suggestions.find(
-            item => item.id === input.suggestionId
-          );
-
-          requireThat(
-            selected,
-            'This button is not available for your current profile.',
-            400
-          );
+          selected = s.suggestions.find(item => item.id === input.suggestionId);
+          requireThat(selected, 'This button is not available for your current profile.', 400);
         }
-
-        // Use the server-stored request, never a prompt supplied
-        // with a button click.
-        const userText = selected
-          ? selected.request
-          : action === 'say'
-            ? text(input.text, 'Message', 600, 1)
-            : ACTIONS[action];
-
+        // Use the server-stored request, never a prompt supplied with a button click.
+        const userText = selected ? selected.request
+          : action === 'say' ? text(input.text, 'Message', 600, 1) : ACTIONS[action];
         return await useModel(s, res, async signal => {
-          res.writeHead(200, {
-            'Content-Type': 'application/x-ndjson; charset=utf-8'
-          });
-
+          res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8' });
           res.flushHeaders();
-
           const emit = async event => {
             signal.throwIfAborted();
-
-            if (!res.write(JSON.stringify(event) + '\n')) {
-              await once(res, 'drain', { signal });
-            }
+            if (!res.write(JSON.stringify(event) + '\n')) await once(res, 'drain', { signal });
           };
-
           try {
-            const output = await model.chat(
-              twinMessages(s, action, userText),
-              {
-                signal,
-                onToken: value => emit({
-                  type: 'token',
-                  text: value
-                })
-              }
-            );
-
+            const output = await model.chat(twinMessages(s, action, userText), {
+              signal, onToken: value => emit({ type: 'token', text: value })
+            });
             signal.throwIfAborted();
-
-            // Commit only a completed exchange.
+            // Commit only a completed exchange, never an interrupted half-answer.
             if (action !== 'open') {
               s.messages.push({
                 role: 'user',
@@ -322,30 +292,14 @@ export function createApp(model = new AnthropicModel()) {
                 ...(selected ? { request: selected.request } : {})
               });
             }
-
-            s.messages.push({
-              role: 'assistant',
-              content: output.text
-            });
-
+            s.messages.push({ role: 'assistant', content: output.text });
             s.metrics = output.metrics;
-
-            await emit({
-              type: 'done',
-              session: publicSession(s)
-            });
+            await emit({ type: 'done', session: publicSession(s) });
           } catch (error) {
-            if (!signal.aborted && !res.destroyed) {
-              await emit({
-                type: 'error',
-                error: error instanceof AppError
-                  ? error.message
-                  : 'Generation was interrupted. Retry.'
-              });
-            }
-          } finally {
-            res.end();
-          }
+            if (!signal.aborted && !res.destroyed) await emit({
+              type: 'error', error: error instanceof AppError ? error.message : 'Generation was interrupted. Retry.'
+            });
+          } finally { res.end(); }
         });
       }
       if (path === '/api/finish') {
@@ -357,8 +311,8 @@ export function createApp(model = new AnthropicModel()) {
       throw new AppError(404, 'Not found.');
     } catch (error) {
       if (!res.headersSent && !res.destroyed) json(res,
-        error instanceof AppError ? error.status : 500,
-        { error: error instanceof AppError ? error.message : 'Request failed. Check the application setup and connection.' });
+        error instanceof AppError ? error.status : error instanceof InterviewError ? 400 : 500,
+        { error: error instanceof AppError || error instanceof InterviewError ? error.message : 'Request failed. Check the application setup and connection.' });
       else if (!res.writableEnded) res.end();
     }
   });

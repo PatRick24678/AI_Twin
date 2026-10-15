@@ -12,23 +12,13 @@
   <button id="reset" class="secondary" hidden>Reset and forget session</button></header>
 <main>
   <p class="eyebrow">A possible future. Still your way of working.</p>
-  <p id="health" class="muted">Checking the local model…</p>
+  <p id="health" class="muted">Checking Claude access…</p>
   <p id="error" role="alert" hidden></p>
-  <div
-    id="loading-indicator"
-    class="loading-indicator"
-    aria-hidden="true"
-    hidden
-  >
-    <svg
-      class="loading-hourglass"
-      viewBox="0 0 24 24"
-      focusable="false"
-    >
+  <div id="loading-indicator" class="loading-indicator" aria-hidden="true" hidden>
+    <svg class="loading-hourglass" viewBox="0 0 24 24" focusable="false">
       <path d="M6 2h12M6 22h12M7 2v5l5 5-5 5v5M17 2v5l-5 5 5 5v5" />
       <path d="M8 6h8M8 18h8" />
     </svg>
-
     <div>
       <p id="loading-title"></p>
       <p id="loading-detail"></p>
@@ -36,12 +26,7 @@
   </div>
 
   <!-- Kept in the accessibility tree so status changes can be announced. -->
-  <p
-    id="status"
-    role="status"
-    aria-live="polite"
-    aria-atomic="true"
-  ></p>
+  <p id="status" role="status" aria-live="polite" aria-atomic="true"></p>
 
   <section id="welcome" class="panel">
     <h1>Meet a workday<br>that could be yours.</h1>
@@ -52,10 +37,8 @@
       <label>Name or alias <input id="name" maxlength="50" required autocomplete="off"></label>
       <label class="check"><input id="consent" type="checkbox" required>
         I understand this is a prototype using Anthropic's hosted Claude API.
-        My answers, optional sample and relevant conversation are sent to
-        Anthropic for processing.
-        I will use fictional, non-confidential material while this version
-        is being tested.
+        My answers, optional sample and relevant conversation are sent to Anthropic for processing.
+        I will use fictional, non-confidential material while this version is being tested.
         Reset clears this application's session, not any provider-side records.
         Inactive application sessions expire after about 30 minutes.</label>
       <button>Start the experience</button>
@@ -64,12 +47,32 @@
   </section>
 
   <section id="intake" class="panel" hidden>
-    <h2>First, your ordinary workday.</h2>
-    <p class="muted">Four guided questions. The wording is scripted; the profile and twin are AI-generated.</p>
+    <p class="eyebrow">A conversation about your work</p>
+    <h2>Let's get to know your workday.</h2>
+    <p>I'm helping build your twin, not speaking as it yet. Brief answers are fine.
+      Skip anything you do not want to discuss. You can also tell me when you want to stop.</p>
     <div id="intake-thread" class="thread"></div>
-    <form id="answer-form"><label>Your answer
-      <textarea id="answer" maxlength="600" required rows="3"></textarea></label>
-      <button>Continue</button></form>
+    <form id="answer-form" hidden>
+      <label>Your answer
+        <textarea id="answer" maxlength="3000" required rows="3"></textarea>
+      </label>
+      <button>Send</button>
+      <button id="skip-question" type="button" class="secondary">Skip this question</button>
+    </form>
+    <div id="interview-recovery" hidden>
+      <p class="muted">Waiting for the interviewer. If the request failed, retry its response;
+        you do not need to submit your answer again.</p>
+      <button id="retry-interview" class="secondary">Retry interviewer</button>
+    </div>
+    <div id="interview-ended" hidden>
+      <h3>Interview finished</h3>
+      <p id="interview-ending-note"></p>
+      <button id="continue-interview">Continue to the optional work example</button>
+    </div>
+    <details>
+      <summary>Developer usage</summary>
+      <p id="interview-usage" class="muted"></p>
+    </details>
   </section>
 
   <section id="sample" class="panel" hidden>
@@ -97,30 +100,16 @@
       <button id="confirm-profile">Confirm and meet my future self</button>
       <button id="cancel-edit" class="secondary">Back</button></div>
   </section>
-  
+
   <section id="prepare" class="panel" hidden>
     <h2>Preparing your conversation.</h2>
-
-    <p>
-      Claude is creating three starting points from the profile
-      you confirmed. They will stay the same during this conversation.
-    </p>
-
-    <p class="muted">
-      If preparation fails, retry or continue without buttons.
-      Your profile is still saved.
-    </p>
-
+    <p>Claude is creating three starting points from the profile you confirmed.
+      They will stay the same during this conversation.</p>
+    <p class="muted">If preparation fails, retry or continue without buttons. Your profile is still saved.</p>
     <div class="actions">
       <button id="retry-suggestions">Generate / retry</button>
-
-      <button id="skip-suggestions" class="secondary">
-        Continue without buttons
-      </button>
-
-      <button id="prepare-edit" class="secondary">
-        Correct my profile
-      </button>
+      <button id="skip-suggestions" class="secondary">Continue without buttons</button>
+      <button id="prepare-edit" class="secondary">Correct my profile</button>
     </div>
   </section>
 
@@ -131,17 +120,9 @@
     <div id="twin-thread" class="thread"></div>
     <button id="open-scene">Meet my future self</button>
     <div id="twin-controls" hidden>
-    <p class="muted">
-      Personal starting points — or ask your own question.
-    </p>
-
-    <div
-      id="suggestions"
-      class="actions"
-      aria-label="Personal conversation starters"
-    ></div>
-
-    <p id="suggestion-note" class="muted" hidden></p>
+      <p class="muted">Personal starting points — or ask your own question.</p>
+      <div id="suggestions" class="actions" aria-label="Personal conversation starters"></div>
+      <p id="suggestion-note" class="muted" hidden></p>
       <form id="message-form"><label>Talk to your future self
         <textarea id="message" maxlength="600" required rows="3"></textarea></label><button>Send</button></form>
     </div>

@@ -11,7 +11,10 @@ async function api(path, data, signal, method = 'POST', auth = token) {
   });
   const result = await response.json();
   signal?.throwIfAborted();
-  if (!response.ok) throw new Error(result.error || 'The request failed.');
+  if (!response.ok) {
+    if (result.session && auth === token) session = result.session;
+    throw new Error(result.error || 'The request failed.');
+  }
   return result;
 }
 function setLoading(title, detail = 'Please wait while this step finishes.') {
@@ -32,6 +35,7 @@ function busy() {
   // Do not trap the participant in a loading screen.
   $('reset').disabled = false;
   $('loading-indicator').hidden = !waiting;
+  renderInterview();
 
   if (!waiting) {
     $('loading-title').textContent = '';
@@ -45,7 +49,6 @@ async function run(work) {
 
   const controller = new AbortController();
   job = controller;
-
   errorMessage();
   busy();
   setLoading('Working…');
@@ -53,9 +56,7 @@ async function run(work) {
   try {
     await work(controller.signal);
   } catch (error) {
-    if (!controller.signal.aborted) {
-      errorMessage(error.message);
-    }
+    if (!controller.signal.aborted) errorMessage(error.message);
   } finally {
     // A reset can replace or clear job. Do not touch a newer request.
     if (job === controller) {
@@ -82,36 +83,44 @@ function thread(id, messages, label) {
 function renderSuggestions() {
   const container = $('suggestions');
   container.replaceChildren();
-
   for (const suggestion of session?.suggestions || []) {
     const button = document.createElement('button');
-
-    button.type = 'button';
-    button.className = 'secondary';
+    button.type = 'button'; button.className = 'secondary';
     button.textContent = suggestion.label;
     button.title = suggestion.request;
     button.disabled = Boolean(job);
-
-    button.onclick = () => run(signal =>
-      talk('suggestion', '', signal, suggestion.id)
-    );
-
+    button.onclick = () => run(signal => talk('suggestion', '', signal, suggestion.id));
     container.append(button);
   }
-
-  $('suggestion-note').hidden =
-    session?.suggestionStatus !== 'skipped';
-
-  $('suggestion-note').textContent =
-    'You chose to continue without shortcuts. Ask your own question below.';
+  $('suggestion-note').hidden = session?.suggestionStatus !== 'skipped';
+  $('suggestion-note').textContent = 'You chose to continue without shortcuts. Ask your own question below.';
 }
+function renderInterview() {
+  const interview = session?.interview;
+  $('answer-form').hidden = interview?.status !== 'waiting';
+  $('interview-recovery').hidden = !interview || interview.status !== 'thinking' || Boolean(job);
+  $('retry-interview').disabled = Boolean(job) || !interview?.retryAllowed;
+  $('interview-ended').hidden = interview?.status !== 'complete';
+  const failed = ['processing_limit', 'context_limit'].includes(interview?.finishReason);
+  $('interview-ending-note').textContent = failed
+    ? 'Processing stopped before every answer could be interpreted. The next step will use only the supported working notes already collected.'
+    : (interview?.observationCount || 0) < 2
+      ? 'There is not enough context yet for a personal twin. We will not invent the missing details. The next screen lets you optionally add an example or enter your own profile statements.'
+      : 'Some details may remain unknown. Next is the optional example and the existing profile-check step; nothing is confirmed automatically.';
+  const usage = interview?.usage;
+  $('interview-usage').textContent = usage
+    ? `Interview requests: ${usage.attempts} · Repairs: ${usage.repairs} · Reported input: ${usage.inputTokens} · Output: ${usage.outputTokens} tokens. Cache read/write: ${usage.cacheReadTokens}/${usage.cacheWriteTokens}. ${usage.unknownUsageRequests ? `${usage.unknownUsageRequests} request(s) have unknown usage; these totals are incomplete. ` : ''}Check the provider Console for billing. No tokens are inferred from word counts.`
+    : '';
+}
+
 function render() {
   const stage = localStage || session?.stage || 'welcome';
   stages.forEach(id => { $(id).hidden = id !== stage; });
   $('reset').hidden = !session;
   renderSuggestions();
+  renderInterview();
   if (!session) return;
-  thread('intake-thread', session.intake, 'A question for you');
+  thread('intake-thread', session.intake, 'Your interviewer');
   thread('twin-thread', session.messages, 'Possible future self');
   if (pending) bubble($('twin-thread'), { role: 'assistant', content: pending }, 'Possible future self');
   $('twin-title').textContent = `${session.name}, a little further ahead.`;
@@ -121,7 +130,9 @@ function render() {
   $('open-scene').hidden = session.messages.length > 0;
   $('twin-controls').hidden = session.messages.length === 0;
   const m = session.metrics;
-  $('metrics').textContent = m ? `Last request — first text: ${m.firstTokenMs ?? '—'} ms · Total: ${m.totalMs} ms · Input: ${m.inputTokens ?? '—'} tokens · Output: ${m.outputTokens ?? '—'} tokens` : '';
+  $('metrics').textContent = m
+    ? `Last request — first text: ${m.firstTokenMs ?? '—'} ms · Total: ${m.totalMs} ms · Input: ${m.inputTokens ?? '—'} tokens · Output: ${m.outputTokens ?? '—'} tokens`
+    : '';
   $('saved-reflection').textContent = session.reflection || 'No reflection entered.';
 }
 function addClaim(value = '', evidence = '') {
@@ -187,69 +198,30 @@ async function prepareConversation(signal, mode = 'generate') {
   }
 }
 async function talk(action, text, signal, suggestionId = '') {
-    setLoading(
+  setLoading(
     action === 'open'
       ? 'Starting your conversation…'
       : 'Your future self is preparing a reply…',
-    'Waiting for the first words from the model.'
+    'Waiting for the first words from Claude.'
   );
+
   const selected = action === 'suggestion'
-    ? session.suggestions.find(item => item.id === suggestionId)
-    : null;
-
-  if (action === 'suggestion' && !selected) {
-    throw new Error('This button is no longer available.');
-  }
-
-  pending = '';
-  render();
-
-  if (action !== 'open') {
-    bubble(
-      $('twin-thread'),
-      {
-        role: 'user',
-        content: selected?.label || text
-      },
-      'You'
-    );
-  }
-
-  const paragraph = bubble(
-    $('twin-thread'),
-    {
-      role: 'assistant',
-      content: '…'
-    },
-    'Possible future self'
-  );
-
+    ? session.suggestions.find(item => item.id === suggestionId) : null;
+  if (action === 'suggestion' && !selected) throw new Error('This button is no longer available.');
+  pending = ''; render();
+  if (action !== 'open') bubble($('twin-thread'), {
+    role: 'user', content: selected?.label || text
+  }, 'You');
+  const paragraph = bubble($('twin-thread'), { role: 'assistant', content: '…' }, 'Possible future self');
   const response = await fetch('/api/twin', {
-    method: 'POST',
-    signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Future-Self': '1',
-      Authorization: `Bearer ${token}`
-    },
-    body: JSON.stringify({
-      action,
-      text,
-      suggestionId
-    })
+    method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action, text, suggestionId })
   });
-
-  if (!response.ok) {
-    throw new Error(
-      (await response.json()).error || 'Generation failed.'
-    );
-  }
-
+  if (!response.ok) throw new Error((await response.json()).error || 'Generation failed.');
   let complete = false;
-
   for await (const event of events(response.body)) {
     signal.throwIfAborted();
-
     if (event.type === 'token') {
       if (event.text && !pending) {
         setLoading(
@@ -257,48 +229,67 @@ async function talk(action, text, signal, suggestionId = '') {
           'The answer is appearing below as it is generated.'
         );
       }
-
-  pending += event.text;
-  paragraph.textContent = pending;
-  $('twin-thread').scrollTop = $('twin-thread').scrollHeight;
-}
-
-    if (event.type === 'error') {
-      throw new Error(event.error);
+      pending += event.text; paragraph.textContent = pending;
+      $('twin-thread').scrollTop = $('twin-thread').scrollHeight;
     }
-
-    if (event.type === 'done') {
-      session = event.session;
-      complete = true;
-    }
+    if (event.type === 'error') throw new Error(event.error);
+    if (event.type === 'done') { session = event.session; complete = true; }
   }
-
   signal.throwIfAborted();
-
-  if (!complete) {
-    throw new Error(
-      'The stream was interrupted. Retry your message.'
-    );
+  if (!complete) throw new Error('The stream was interrupted. Retry your message.');
+  $('message').value = ''; pending = ''; render();
+}
+async function interviewRequest(path, data, signal) {
+  const previousQuestion = session?.interview?.questionId;
+  const previousTurns = session?.interview?.turns || 0;
+  setLoading(
+    previousQuestion ? 'Considering your answer…' : 'Meeting your interviewer…',
+    'Claude is preparing one question and updating the working notes.'
+  );
+  try {
+    session = await api(path, data, signal);
+  } catch (error) {
+    // A network failure can hide a successfully accepted answer. Re-read our own
+    // session before offering Retry; do not automatically resend or regenerate.
+    if (!signal.aborted) {
+      try { session = await api('/api/session', undefined, signal, 'GET'); }
+      catch { /* Keep the last known state and the original error. */ }
+    }
+    throw error;
+  } finally {
+    if (!signal.aborted) {
+      const current = session?.interview;
+      if (current && (current.turns > previousTurns || current.status === 'complete')) {
+        $('answer').value = '';
+      }
+      render();
+    }
   }
-
-  $('message').value = '';
-  pending = '';
-  render();
 }
 $('welcome-form').onsubmit = event => {
   event.preventDefault();
   run(async signal => {
     const result = await api('/api/session', { name: $('name').value, consent: $('consent').checked }, signal);
     token = result.token; session = result.session; localStage = ''; render();
+    await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
   });
 };
 $('answer-form').onsubmit = event => {
   event.preventDefault();
-  run(async signal => {
-    session = await api('/api/answer', { text: $('answer').value }, signal);
-    $('answer').value = ''; render();
-  });
+  run(signal => interviewRequest('/api/answer', {
+    questionId: session.interview.questionId, kind: 'answer', text: $('answer').value
+  }, signal));
 };
+$('skip-question').onclick = () => run(signal => interviewRequest('/api/answer', {
+  questionId: session.interview.questionId, kind: 'skip'
+}, signal));
+$('retry-interview').onclick = () => run(signal => interviewRequest('/api/interview/next', {
+  requestId: session.interview.requestId
+}, signal));
+$('continue-interview').onclick = () => run(async signal => {
+  session = await api('/api/interview/continue', {}, signal);
+  render();
+});
 function readSample() {
   return {
     text: $('sample-text').value, context: $('sample-context').value,
@@ -326,30 +317,14 @@ $('add-claim').onclick = () => {
   if ($('claims').children.length < 6) addClaim();
 };
 $('confirm-profile').onclick = () => run(async signal => {
-  const facts = [...$('claims').querySelectorAll('textarea')]
-    .map(el => el.value.trim())
-    .filter(Boolean);
-
-  session = await api(
-    '/api/profile',
-    {
-      facts,
-      sample: readSample()
-    },
-    signal
-  );
-
-  localStage = '';
-  render();
-
+  const facts = [...$('claims').querySelectorAll('textarea')].map(el => el.value.trim()).filter(Boolean);
+  session = await api('/api/profile', { facts, sample: readSample() }, signal);
+  localStage = ''; render();
   await prepareConversation(signal);
 });
-$('retry-suggestions').onclick = () =>
-  run(signal => prepareConversation(signal));
-
-$('skip-suggestions').onclick = () =>
-  run(signal => prepareConversation(signal, 'skip'));
-
+$('open-scene').onclick = () => run(signal => talk('open', '', signal));
+$('retry-suggestions').onclick = () => run(signal => prepareConversation(signal));
+$('skip-suggestions').onclick = () => run(signal => prepareConversation(signal, 'skip'));
 $('prepare-edit').onclick = () => editProfile();
 $('message-form').onsubmit = event => {
   event.preventDefault(); run(signal => talk('say', $('message').value, signal));
@@ -394,7 +369,7 @@ async function initialize() {
       label.append(radio, title, example); $('examples').append(label);
     }
     const health = await api('/api/health', undefined, undefined, 'GET');
-    $('health').textContent = `Claude model access available: ${health.model}`;
+    $('health').textContent = `Claude model access verified: ${health.model}`;
   } catch (error) { $('health').textContent = `Model not ready: ${error.message}`; }
 }
 render(); initialize();

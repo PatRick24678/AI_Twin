@@ -1,3 +1,4 @@
+import { fixtureInterviewTurn, completeTestInterview } from '../test-support/interview-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -166,10 +167,16 @@ test('HTTP app journey uses Claude transport while preserving confirmation, butt
   const answers = ['I coordinate projects.', 'I dislike chasing updates.', 'I prefer short messages.', 'I enjoy client conversations.'];
   const { model, calls } = mock((url, options) => {
     if (options.method === 'GET') return Response.json({ type: 'model', id: MODEL });
-    const schema = JSON.parse(options.body).output_config?.format?.schema;
-    if (schema?.properties?.claims) return streamResponse(JSON.stringify({ claims: answers.slice(0, 3).map((text, i) => ({
-      text, sourceId: `answer${i + 1}`, quote: text
-    })) }));
+    const request = JSON.parse(options.body);
+    const schema = request.output_config?.format?.schema;
+    const fullMessages = [{ role: 'system', content: request.system }, ...request.messages];
+    if (schema?.properties?.question) return streamResponse(JSON.stringify(fixtureInterviewTurn(fullMessages)));
+    if (schema?.properties?.claims) {
+      const { sources } = JSON.parse(request.messages[0].content);
+      return streamResponse(JSON.stringify({ claims: sources.slice(0, 3).map(source => ({
+        text: source.interpretation || source.text, sourceId: source.id, quote: source.text
+      })) }));
+    }
     if (schema?.properties?.suggestions) return streamResponse(JSON.stringify({ suggestions: [
       { label: 'What changes about my project updates?', request: 'Explore project coordination in my possible workday.', kind: 'conversation', factIds: ['fact-1'] },
       { label: 'Would I still chase updates?', request: 'Explore the friction involved in chasing updates.', kind: 'conversation', factIds: ['fact-2'] },
@@ -191,7 +198,7 @@ test('HTTP app journey uses Claude transport while preserving confirmation, butt
     return response;
   }
   token = (await (await call('/api/session', { name: 'Alex', consent: true })).json()).token;
-  for (const text of answers) await call('/api/answer', { text });
+  await completeTestInterview(base, token, answers);
   const review = await (await call('/api/sample', { text: '', context: '', style: 'none' })).json();
   assert.equal(review.stage, 'review');
   const profile = await (await call('/api/profile', { facts: review.claims.map(c => c.text) })).json();
@@ -201,7 +208,7 @@ test('HTTP app journey uses Claude transport while preserving confirmation, butt
   const result = wire.trim().split('\n').map(JSON.parse).at(-1);
   assert.equal(result.type, 'done');
   assert.ok(!wire.includes(KEY));
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 8); // Opening + four answers + profile + suggestions + twin.
   assert.equal(result.session.metrics.outputTokens, 9);
   const info = await (await call('/api/info', undefined, 'GET')).json();
   assert.ok(!JSON.stringify(info).includes(KEY));

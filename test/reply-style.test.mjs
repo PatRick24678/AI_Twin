@@ -1,3 +1,4 @@
+import { withInterviewFixture, completeTestInterview } from '../test-support/interview-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -211,7 +212,7 @@ test('HTTP flow tracks origins, ignores failed turns and resets style history wi
     }
   };
 
-  const server = createApp(model);
+  const server = createApp(withInterviewFixture(model));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
 
@@ -234,31 +235,19 @@ test('HTTP flow tracks origins, ignores failed turns and resets style history wi
       body: JSON.stringify(data)
     });
 
-    if (!response.ok) {
-        const errorBody = await response.text();
+    assert.ok(
+      response.ok,
+      `Unexpected HTTP ${response.status} for ${path}`
+    );
 
-        assert.fail(
-            [
-            `POST ${path} returned HTTP ${response.status}`,
-            `Request body: ${JSON.stringify(data, null, 2)}`,
-            `Server response: ${errorBody}`
-            ].join('\n')
-        );
-    }
-
-    // Pacing tests explicitly skip the optional buttons.
-    // The new suite tests generation.
+    // Pacing tests explicitly skip the optional buttons. The new suite tests generation.
     if (path === '/api/profile') {
-    const profile = await response.json();
-
-    assert.equal(profile.stage, 'prepare');
-
-    return post('/api/suggestions', {
-        profileVersion: profile.profileVersion,
-        mode: 'skip'
-    });
+      const profile = await response.json();
+      assert.equal(profile.stage, 'prepare');
+      return post('/api/suggestions', {
+        profileVersion: profile.profileVersion, mode: 'skip'
+      });
     }
-
     return response;
   }
 
@@ -282,9 +271,7 @@ test('HTTP flow tracks origins, ignores failed turns and resets style history wi
 
   token = created.token;
 
-  for (const answer of shortSession().answers) {
-    await post('/api/answer', { text: answer });
-  }
+  await completeTestInterview(base, token, shortSession().answers);
 
   await post('/api/profile', {
     facts: shortSession().facts
