@@ -1,4 +1,6 @@
-# Tatoma Future Self — private development prototype
+
+# Tatoma Future Self — local prototype
+[ALL WORKS & DESCRIPTIONS SUBJECT TO CHANGE]
 
 A text-first research demonstrator. The Node application runs locally, but the model-led interview, profile extraction,
 personal conversation starters and future-self replies now use Anthropic's hosted Claude API.
