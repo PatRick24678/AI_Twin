@@ -4,10 +4,13 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { once } from 'node:events';
 import {
-  AppError, requireThat, text, EXAMPLES, PROFILE_SCHEMA, ACTIONS,
-  sampleInput, sourcesFor, groundedClaims, confirmedFacts, publicSession
+  AppError, requireThat, text, EXAMPLES, ACTIONS, sampleInput, publicSession
 } from './lib/domain.mjs';
-import { profileMessages, twinMessages } from './lib/prompts.mjs';
+import { twinMessages } from './lib/prompts.mjs';
+import {
+  PROFILE_TOPICS, PROFILE_LIMITS, createProfileDraft, answerProfileQuestion, confirmProfile, useProfileNotes
+} from './lib/profile-core.mjs';
+import { advanceProfile, canRetryProfile } from './lib/profile-builder.mjs';
 import { AnthropicModel } from './lib/anthropic-model.mjs';
 import { generateSuggestions } from './lib/suggestions.mjs';
 import { createInterview, recordInterviewInput } from './lib/interview-state.mjs';
@@ -32,7 +35,7 @@ async function body(req) {
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    requireThat(size <= 16000, 'Request is too large.', 413);
+    requireThat(size <= 64000, 'Request is too large.', 413);
     chunks.push(chunk);
   }
   try {
@@ -106,6 +109,35 @@ export function createApp(model = new AnthropicModel()) {
       });
     }
   }
+  function syncProfile(s) {
+    s.stage = s.profileDraft.status === 'review' ? 'review'
+      : s.profileDraft.status === 'clarifying' ? 'clarify' : 'profile_build';
+    s.profileRetryAllowed = canRetryProfile(s.profileDraft);
+    s.notice = s.profileDraft.note;
+  }
+  async function profileResponse(s, res, signal) {
+    const pending = s.profileDraft, requestId = pending.requestId;
+    try {
+      const result = await advanceProfile(model, pending, signal);
+      signal.throwIfAborted();
+      requireThat(s.profileDraft === pending && pending.requestId === requestId,
+        'The profile changed while processing this response.', 409);
+      s.profileDraft = result.draft; s.metrics = result.metrics;
+      syncProfile(s); json(res, 200, publicSession(s));
+    } catch (error) {
+      if (res.destroyed) return;
+      if (signal.aborted) {
+        if (!res.writableEnded) json(res, 409, { error: 'The profile request was cancelled.' });
+        return;
+      }
+      syncProfile(s);
+      if (error.status === 413) s.profileRetryAllowed = false;
+      json(res, error instanceof AppError ? error.status : 502, {
+        error: error instanceof AppError ? error.message : 'Could not process the profile. Your input is kept.',
+        session: publicSession(s)
+      });
+    }
+  }
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -127,7 +159,7 @@ export function createApp(model = new AnthropicModel()) {
         return res.end(data);
       }
       if (method === 'GET' && path === '/api/info') {
-        return json(res, 200, { examples: EXAMPLES, model: model.name });
+        return json(res, 200, { examples: EXAMPLES, model: model.name, profileTopics: PROFILE_TOPICS, profileLimits: PROFILE_LIMITS });
       }
       if (method === 'GET' && path === '/api/health') {
         let result;
@@ -147,7 +179,7 @@ export function createApp(model = new AnthropicModel()) {
           name: text(input.name, 'Name or alias', 50, 1), stage: 'intake',
           answers: [], intake: [], interview: createInterview(),
           interviewUsage: newInterviewUsage(), interviewRetryAllowed: true,
-          sample: null, claims: [], facts: [], messages: [], reflection: '',
+          sample: null, claims: [], facts: [], profile: null, profileDraft: null, profileRetryAllowed: false, messages: [], reflection: '',
           profileVersion: 0, suggestions: [], suggestionStatus: 'pending',
           metrics: null, notice: '', touched: Date.now()
         };
@@ -210,32 +242,52 @@ export function createApp(model = new AnthropicModel()) {
         return json(res, 200, publicSession(s));
       }
       if (path === '/api/sample') {
-        requireThat(s.stage === 'sample', 'Complete the intake first.', 409);
-        const sample = sampleInput(input);
-        requireThat(sourcesFor({ ...s, sample }).length > 0,
-          'There is no supported profile material yet. Add your own profile statements or restart; we will not invent a professional.', 422);
+        requireThat(s.stage === 'sample', 'Complete the interview before preparing a profile.', 409);
+        const sample = sampleInput(input), mode = input.mode || 'build';
+        requireThat(['build', 'manual'].includes(mode), 'Choose build or manual profile.');
+        const draft = createProfileDraft(s, sample, mode);
+        const save = () => { s.sample = sample; s.profileDraft = draft; syncProfile(s); };
+        if (draft.status === 'review') { save(); return json(res, 200, publicSession(s)); }
         return await useModel(s, res, async signal => {
-          s.sample = sample;
-          const output = await model.chat(profileMessages(s), { schema: PROFILE_SCHEMA, signal });
-          signal.throwIfAborted();
-          let parsed;
-          try { parsed = JSON.parse(output.text); }
-          catch { throw new AppError(502, 'The model produced invalid JSON. Retry or enter a manual profile.'); }
-          const claims = groundedClaims(parsed, sourcesFor(s));
-          requireThat(claims.length >= 2, 'Too few source-backed observations. Retry or enter a manual profile.', 502);
-          s.claims = claims; s.metrics = output.metrics; s.stage = 'review';
-          s.notice = 'Check the interpretation. A matching quote does not prove that the interpretation is correct.';
-          json(res, 200, publicSession(s));
+          save(); await profileResponse(s, res, signal);
+        });
+      }
+      if (path === '/api/profile/retry') {
+        requireThat(s.stage === 'profile_build' && s.profileDraft?.id === input.draftId &&
+          input.requestId === s.profileDraft.requestId, 'This pending profile request is out of date.', 409);
+        requireThat(s.profileRetryAllowed, 'Retry limit reached. Continue with the available notes.', 429);
+        return await useModel(s, res, signal => profileResponse(s, res, signal));
+      }
+      if (path === '/api/profile/notes') {
+        requireThat(['profile_build', 'clarify'].includes(s.stage) && s.profileDraft?.id === input.draftId,
+          'There is no unfinished profile with that ID.', 409);
+        s.profileDraft = useProfileNotes(s.profileDraft); syncProfile(s);
+        return json(res, 200, publicSession(s));
+      }
+      if (path === '/api/profile/clarify') {
+        requireThat(s.stage === 'clarify' && s.profileDraft?.id === input.draftId,
+          'This clarification is not part of the current profile.', 409);
+        const kind = input.kind || 'answer';
+        requireThat(['answer', 'skip'].includes(kind), 'Choose answer or skip.');
+        const value = kind === 'answer' ? text(input.text, 'Answer', PROFILE_LIMITS.answer, 1) : '';
+        requireThat(kind !== 'skip' || !input.text, 'A skip must not include an answer.');
+        const control = kind === 'skip' ? 'skip' : explicitInterviewControl(value);
+        const draft = answerProfileQuestion(s.profileDraft, {
+          questionId: input.questionId, kind: control || 'answer', text: control ? '' : value
+        });
+        if (draft.status !== 'resolving') {
+          s.profileDraft = draft; syncProfile(s); return json(res, 200, publicSession(s));
+        }
+        return await useModel(s, res, async signal => {
+          s.profileDraft = draft; syncProfile(s); await profileResponse(s, res, signal);
         });
       }
       if (path === '/api/profile') {
-        requireThat(['sample', 'review', 'prepare', 'twin'].includes(s.stage), 'Complete the intake first.', 409);
-        const facts = confirmedFacts(input);
-        const sample = s.stage === 'sample' && input.sample ? sampleInput(input.sample) : s.sample;
-        s.facts = facts; s.sample = sample;
-        // Explicit correction resets the scene so discarded claims cannot persist in old dialogue.
+        requireThat(['review', 'prepare', 'twin'].includes(s.stage), 'Finish the profile draft first.', 409);
+        const profile = confirmProfile(s, input);
+        s.profile = profile; s.profileVersion = profile.version;
+        s.facts = profile.entries.map(item => item.text); // Read-only compatibility/display projection.
         s.messages = []; s.stage = 'prepare'; s.metrics = null; s.notice = '';
-        s.profileVersion += 1;
         s.suggestions = []; s.suggestionStatus = 'pending';
         return json(res, 200, publicSession(s));
       }
@@ -279,7 +331,7 @@ export function createApp(model = new AnthropicModel()) {
             if (!res.write(JSON.stringify(event) + '\n')) await once(res, 'drain', { signal });
           };
           try {
-            const output = await model.chat(twinMessages(s, action, userText), {
+            const output = await model.chat(twinMessages(s, action, userText, { includeSample: action === 'demo' || selected?.kind === 'draft' }), {
               signal, onToken: value => emit({ type: 'token', text: value })
             });
             signal.throwIfAborted();

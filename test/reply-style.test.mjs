@@ -1,3 +1,4 @@
+import { profileSubmission } from '../test-support/profile-fixture.mjs';
 import { withInterviewFixture, completeTestInterview } from '../test-support/interview-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -225,6 +226,7 @@ test('HTTP flow tracks origins, ignores failed turns and resets style history wi
   let token = '';
 
   async function post(path, data) {
+    if (path === '/api/profile' && Array.isArray(data?.facts)) data = await profileSubmission(base, token, data.facts, data.sample);
     const response = await fetch(base + path, {
       method: 'POST',
       headers: {

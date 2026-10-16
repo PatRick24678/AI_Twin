@@ -35,6 +35,7 @@ button:disabled { opacity: .55; cursor: wait; }
 #saved-reflection { white-space: pre-wrap; }
 @media (max-width: 600px) { .panel { padding: 22px; } header { align-items: flex-start; flex-direction: column; } }
 @media (prefers-reduced-motion: no-preference) { .panel { animation: enter .22s ease-out; } @keyframes enter { from { opacity: .3; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } } }
+
 /* A visible, non-blocking progress card that follows the page when scrolling. */
 .loading-indicator {
   position: sticky;
@@ -91,17 +92,19 @@ button:disabled { opacity: .55; cursor: wait; }
 }
 
 @keyframes turn-hourglass {
-  0%, 20% {
-    transform: rotate(0deg);
-  }
-
-  80%, 100% {
-    transform: rotate(180deg);
-  }
+  0%, 20% { transform: rotate(0deg); }
+  80%, 100% { transform: rotate(180deg); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .loading-hourglass {
-    animation: none;
-  }
+  .loading-hourglass { animation: none; }
 }
+
+/* Structured, source-linked profile check. Original sample/draft comparison is a later feature. */
+.profile-group { margin: 18px 0; border: 1px solid #d8e0d8; border-radius: 12px; padding: 16px; }
+.profile-group > summary { font-size: 1.08rem; font-weight: 700; cursor: pointer; }
+.profile-group .claim { margin-bottom: 0; background: #fafbf8; }
+.entry-topic { display: block; width: 100%; font: inherit; padding: 10px; background: #fff; color: inherit; border: 1px solid #a5b1ab; border-radius: 8px; }
+.claim details { margin: 12px 0; overflow-wrap: anywhere; }
+.profile-warning { padding: 14px 18px; background: #fff8e6; border-left: 4px solid #b38525; border-radius: 6px; }
+#profile-pending-answer { white-space: pre-wrap; overflow-wrap: anywhere; }

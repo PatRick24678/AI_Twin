@@ -1,10 +1,12 @@
+import { profileSubmission } from '../test-support/profile-fixture.mjs';
 import { withInterviewFixture, completeTestInterview } from '../test-support/interview-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { createApp } from '../server.mjs';
-import { groundedClaims, sourcesFor } from '../lib/domain.mjs';
+import { sourcesFor } from '../lib/domain.mjs';
+import { createProfileDraft, applyProfileAudit } from '../lib/profile-core.mjs';
 import { OllamaModel } from '../lib/model.mjs';
 
 class FakeModel {
@@ -14,12 +16,10 @@ class FakeModel {
   async health() { return { ok: true, model: this.name }; }
   async chat(messages, { schema, onToken } = {}) {
     this.calls.push(messages);
-    if (schema) {
-      const { sources } = JSON.parse(messages[1].content);
-      return { text: JSON.stringify({ claims: sources.slice(0, 3).map(s => ({
-        text: s.text, sourceId: s.id, quote: s.text
-      })) }), metrics: { firstTokenMs: 1, totalMs: 2, tokensPerSecond: 3 } };
-    }
+    if (schema?.properties?.sampleNotes) return {
+      text: JSON.stringify({ sampleNotes: [], clarifications: [] }),
+      metrics: { firstTokenMs: 1, totalMs: 2, inputTokens: 5, outputTokens: 5 }
+    };
     await onToken?.('A possible ');
     if (this.failNext) { this.failNext = false; throw new Error('Simulated interruption'); }
     await onToken?.('future workday.');
@@ -33,6 +33,7 @@ async function fixture(t, model = new FakeModel()) {
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${server.address().port}`;
   async function call(path, data, token = '', method = 'POST', extraHeaders = {}) {
+    if (path === '/api/profile' && Array.isArray(data?.facts)) data = await profileSubmission(base, token, data.facts, data.sample);
     const response = await fetch(base + path, {
       method, headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1',
         Authorization: `Bearer ${token}`, ...extraHeaders },
@@ -69,8 +70,8 @@ test('full journey, real HTTP streaming, explicit correction, reflection and res
   const token = await seed();
   const sample = await call('/api/sample', { text: '', context: '', style: 'direct' }, token);
   assert.equal(sample.body.stage, 'review');
-  assert.equal(sample.body.claims.length, 3);
-  const profile = await call('/api/profile', { facts: sample.body.claims.map(c => c.text) }, token);
+  assert.equal(sample.body.profileDraft.entries.length, 6);
+  const profile = await call('/api/profile', { facts: sample.body.profileDraft.entries.map(c => c.text) }, token);
   assert.equal(profile.body.stage, 'twin');
   const opened = await stream(token);
   assert.ok(opened.some(e => e.type === 'token'));
@@ -93,7 +94,7 @@ test('cannot bypass intake or confirmation; input limits enforced', async t => {
   assert.equal((await call('/api/answer', { questionId: opened.body.interview.questionId, text: 'x'.repeat(3001) }, token)).status, 400);
   assert.equal((await call('/api/session', { name: 'A', consent: false })).status, 400);
   const ready = await seed();
-  assert.equal((await call('/api/profile', { facts: ['one'] }, ready)).status, 400);
+  assert.equal((await call('/api/profile', { facts: [] }, ready)).status, 400);
 });
 test('a failed streamed exchange is not stored and can be retried', async t => {
   const { call, seed, stream, model } = await fixture(t);
@@ -117,13 +118,15 @@ test('sessions are isolated; cross-origin requests are rejected', async t => {
   assert.equal((await call('/api/session', { name: 'X', consent: true }, '', 'POST',
     { Origin: 'https://unrelated.example' })).status, 403);
 });
-test('unsupported quotes and fictional reference evidence are discarded', () => {
-  const result = groundedClaims({ claims: [
-    { text: 'Valid', sourceId: 'answer1', quote: 'I write updates' },
-    { text: 'Invented', sourceId: 'answer1', quote: 'I lead 50 people' },
-    { text: 'A reference is not my memory', sourceId: 'reference', quote: 'Thursday' }
-  ] }, [{ id: 'answer1', text: 'I write updates each week.' }]);
-  assert.equal(result.length, 1);
+test('profile audit rejects unsupported sample quotes and fabricated fields; borrowed samples are not personal evidence', () => {
+  const sample = { text: 'A brief request.', context: 'Internal update', authored: true, typical: true, style: 'none' };
+  const draft = createProfileDraft({}, sample);
+  assert.throws(() => applyProfileAudit(draft, { sampleNotes: [
+    { text: 'Keeps messages brief.', scope: 'Internal messages', quote: 'A brief request.' },
+    { text: 'Manages fifty people.', scope: 'A fictional claim', quote: 'I lead 50 people' }
+  ], clarifications: [] }), /exact quote/);
+  assert.equal(draft.entries.length, 0); // Atomic validation, not a partly accepted output.
+  assert.throws(() => applyProfileAudit(draft, { sampleNotes: [], clarifications: [], role: 'Invented' }), /unexpected/);
   assert.ok(!sourcesFor({ answers: ['Hello'], sample: {
     text: 'A borrowed sample', authored: false, typical: true, style: 'none'
   } }).some(s => s.id === 'sample'));

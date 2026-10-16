@@ -86,19 +86,48 @@
       <h3>Which approach feels closest?</h3>
       <p class="muted">These are fictional examples of the same situation—not personality types.</p>
       <div id="examples"></div>
-      <button>Build a tentative profile</button>
+      <button>Prepare my profile</button>
       <button id="manual" type="button" class="secondary">Write my profile manually</button>
     </form>
   </section>
 
+  <section id="profile_build" class="panel" hidden>
+    <h2>Bringing your profile together.</h2>
+    <p>The interview notes are kept as evidence-linked statements. Claude checks for important ambiguities and, when appropriate, interprets your writing example.</p>
+    <p id="profile-pending-answer" class="muted"></p>
+    <div id="profile-recovery" hidden>
+      <p>Your input is kept. Retry the response, not your answer, or continue with the notes already available.</p>
+      <button id="retry-profile" class="secondary">Retry profile processing</button>
+      <button id="profile-notes" class="secondary">Continue with available notes</button>
+    </div>
+  </section>
+
+  <section id="clarify" class="panel" hidden>
+    <p class="eyebrow">One point to clarify</p>
+    <h2 id="clarification-question"></h2>
+    <p id="clarification-reason" class="muted"></p>
+    <form id="clarification-form">
+      <label>Your answer<textarea id="clarification-answer" maxlength="1200" rows="3" required></textarea></label>
+      <button>Send</button>
+      <button id="skip-clarification" type="button" class="secondary">Skip this question</button>
+    </form>
+    <p class="muted">Optional. Skipping keeps uncertain statements out of the twin unless you explicitly include them at the final check.</p>
+  </section>
+
   <section id="review" class="panel" hidden>
-    <h2>Does this sound like you?</h2>
+    <h2>What should your twin know?</h2>
     <p id="review-note"></p>
-    <p>Edit or remove anything that is wrong. Only the statements you confirm will define the twin.</p>
+    <p>This is the current prototype's final check, not a personality assessment. Edit, exclude or add statements. Context matters: a client email can be different from an internal message.</p>
+    <p id="profile-count" class="muted" role="status"></p>
+    <div id="profile-unresolved" class="profile-warning" hidden></div>
     <div id="claims"></div>
-    <div class="actions"><button id="add-claim" class="secondary">Add a statement</button>
-      <button id="confirm-profile">Confirm and meet my future self</button>
-      <button id="cancel-edit" class="secondary">Back</button></div>
+    <div class="actions"><button id="add-claim" class="secondary">Add a statement</button></div>
+    <details><summary>What remains unknown</summary><p id="profile-unknown" class="muted"></p></details>
+    <label class="check"><input id="approve-profile" type="checkbox">I have checked the included statements and want the twin to use this interpretation. This does not independently verify my information.</label>
+    <div class="actions">
+      <button id="confirm-profile">Use this profile</button>
+      <button id="cancel-edit" class="secondary">Back</button>
+    </div>
   </section>
 
   <section id="prepare" class="panel" hidden>
@@ -116,7 +145,8 @@
   <section id="twin" class="panel" hidden>
     <p class="eyebrow">An imagined workday · two years from now</p>
     <h2 id="twin-title">Your future self</h2>
-    <details><summary>What this version knows about you</summary><ul id="facts"></ul></details>
+    <p id="limited-profile" class="profile-warning" hidden></p>
+    <details><summary>What this version knows about you</summary><ul id="facts"></ul><p id="twin-unknown" class="muted"></p></details>
     <div id="twin-thread" class="thread"></div>
     <button id="open-scene">Meet my future self</button>
     <div id="twin-controls" hidden>
@@ -145,6 +175,7 @@
     <p>Nothing was sent, scheduled or automated. Your reflection stays in this temporary session unless you export it.</p>
     <button id="export">Save session notes (includes your text)</button>
   </section>
+<details id="profile-usage-panel" hidden><summary>Developer profile usage</summary><p id="profile-usage" class="muted"></p></details>
 </main>
 <footer>Private development prototype · Hosted Claude inference · No career prediction</footer>
 </body>

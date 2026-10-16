@@ -1,3 +1,4 @@
+import { profileSubmission } from '../test-support/profile-fixture.mjs';
 import { fixtureInterviewTurn, completeTestInterview } from '../test-support/interview-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -171,12 +172,7 @@ test('HTTP app journey uses Claude transport while preserving confirmation, butt
     const schema = request.output_config?.format?.schema;
     const fullMessages = [{ role: 'system', content: request.system }, ...request.messages];
     if (schema?.properties?.question) return streamResponse(JSON.stringify(fixtureInterviewTurn(fullMessages)));
-    if (schema?.properties?.claims) {
-      const { sources } = JSON.parse(request.messages[0].content);
-      return streamResponse(JSON.stringify({ claims: sources.slice(0, 3).map(source => ({
-        text: source.interpretation || source.text, sourceId: source.id, quote: source.text
-      })) }));
-    }
+    if (schema?.properties?.sampleNotes) return streamResponse(JSON.stringify({ sampleNotes: [], clarifications: [] }));
     if (schema?.properties?.suggestions) return streamResponse(JSON.stringify({ suggestions: [
       { label: 'What changes about my project updates?', request: 'Explore project coordination in my possible workday.', kind: 'conversation', factIds: ['fact-1'] },
       { label: 'Would I still chase updates?', request: 'Explore the friction involved in chasing updates.', kind: 'conversation', factIds: ['fact-2'] },
@@ -201,7 +197,8 @@ test('HTTP app journey uses Claude transport while preserving confirmation, butt
   await completeTestInterview(base, token, answers);
   const review = await (await call('/api/sample', { text: '', context: '', style: 'none' })).json();
   assert.equal(review.stage, 'review');
-  const profile = await (await call('/api/profile', { facts: review.claims.map(c => c.text) })).json();
+  const submission = await profileSubmission(base, token, review.profileDraft.entries.map(c => c.text));
+  const profile = await (await call('/api/profile', submission)).json();
   const ready = await (await call('/api/suggestions', { profileVersion: profile.profileVersion, mode: 'generate' })).json();
   assert.equal(ready.suggestions.length, 3);
   const wire = await (await call('/api/twin', { action: 'open' })).text();
@@ -225,4 +222,17 @@ test('Sonnet uses its supported between-tools setting rather than Haiku thinking
   await model.chat(messages);
   assert.equal(payload.model, 'claude-sonnet-5-5');
   assert.deepEqual(payload.thinking, { type: 'between_tools' });
+});
+
+test('profile processing can request a bounded larger structured output without changing chat defaults', async () => {
+  const { model, calls } = mock();
+  await model.chat(messages, { schema: { type: 'object', properties: {}, additionalProperties: false }, maxOutputTokens: 2800 });
+  assert.equal(JSON.parse(calls[0].options.body).max_tokens, 2800);
+});
+test('invalid output-budget overrides are rejected before an API call', async () => {
+  const { model, calls } = mock();
+  for (const maxOutputTokens of [0, -1, 4097, 2.5, '2800']) {
+    await assert.rejects(model.chat(messages, { maxOutputTokens }), /output-token limit/);
+  }
+  assert.equal(calls.length, 0);
 });

@@ -160,7 +160,7 @@ test('cancelled generation does not commit a late otherwise valid result', async
   assert.equal(state.messages.length, 0);
 });
 
-test('the old profile handoff uses active observation IDs, not answer1–answer4 or retired facts', () => {
+test('the evidence view uses active observation IDs, not answer1–answer4 or retired facts', () => {
   let state = recordInterviewInput(opening(), { text: 'I write reports.' });
   let data = JSON.parse(interviewMessages(state)[1].content);
   let turn = question('friction', 'What gets in the way?');
@@ -328,7 +328,9 @@ test('HTTP early sparse ending does not generate profile facts and keeps optiona
   await f.call('/api/interview/continue', {}, a.token);
   const before = f.model.calls.length;
   const noEvidence = await f.call('/api/sample', { text: '', context: '', style: 'none' }, a.token);
-  assert.equal(noEvidence.status, 422);
+  assert.equal(noEvidence.status, 200);
+  assert.equal(noEvidence.body.stage, 'review');
+  assert.deepEqual(noEvidence.body.profileDraft.entries, []);
   assert.equal(f.model.calls.length, before); // No billable attempt to manufacture a profile.
 });
 

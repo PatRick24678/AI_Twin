@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
-let token = '', session = null, job = null, localStage = '', pending = '';
-const stages = ['welcome', 'intake', 'sample', 'review', 'prepare', 'twin', 'reflection', 'done'];
+let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '';
+let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180 };
+const stages = ['welcome', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done'];
 function errorMessage(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 async function api(path, data, signal, method = 'POST', auth = token) {
   const response = await fetch(path, {
@@ -28,7 +29,7 @@ function setLoading(title, detail = 'Please wait while this step finishes.') {
 function busy() {
   const waiting = Boolean(job);
 
-  document.querySelectorAll('button,input,textarea').forEach(el => {
+  document.querySelectorAll('button,input,textarea,select').forEach(el => {
     el.disabled = waiting;
   });
 
@@ -36,6 +37,8 @@ function busy() {
   $('reset').disabled = false;
   $('loading-indicator').hidden = !waiting;
   renderInterview();
+  renderProfileProcess();
+  updateProfileCount();
 
   if (!waiting) {
     $('loading-title').textContent = '';
@@ -104,7 +107,7 @@ function renderInterview() {
   const failed = ['processing_limit', 'context_limit'].includes(interview?.finishReason);
   $('interview-ending-note').textContent = failed
     ? 'Processing stopped before every answer could be interpreted. The next step will use only the supported working notes already collected.'
-    : (interview?.observationCount || 0) < 2
+    : (interview?.observationCount || 0) === 0
       ? 'There is not enough context yet for a personal twin. We will not invent the missing details. The next screen lets you optionally add an example or enter your own profile statements.'
       : 'Some details may remain unknown. Next is the optional example and the existing profile-check step; nothing is confirmed automatically.';
   const usage = interview?.usage;
@@ -119,14 +122,20 @@ function render() {
   $('reset').hidden = !session;
   renderSuggestions();
   renderInterview();
+  renderProfileProcess();
   if (!session) return;
+  if (stage === 'review') renderProfileEditor();
   thread('intake-thread', session.intake, 'Your interviewer');
   thread('twin-thread', session.messages, 'Possible future self');
   if (pending) bubble($('twin-thread'), { role: 'assistant', content: pending }, 'Possible future self');
   $('twin-title').textContent = `${session.name}, a little further ahead.`;
-  $('facts').replaceChildren(...session.facts.map(fact => {
-    const item = document.createElement('li'); item.textContent = fact; return item;
+  $('facts').replaceChildren(...(session.profile?.entries || []).map(fact => {
+    const item = document.createElement('li'); item.textContent = `${fact.text}${fact.scope ? ` — ${fact.scope}` : ''}`; return item;
   }));
+  $('limited-profile').hidden = !session.profile?.limited;
+  $('limited-profile').textContent = 'This twin has limited personal context. Missing information should remain unknown; the future workday is a possibility, not a prediction.';
+  $('twin-unknown').textContent = session.profile?.unknownTopics.length
+    ? `Not established: ${session.profile.unknownTopics.map(item => item.label).join(', ')}.` : '';
   $('open-scene').hidden = session.messages.length > 0;
   $('twin-controls').hidden = session.messages.length === 0;
   const m = session.metrics;
@@ -135,27 +144,109 @@ function render() {
     : '';
   $('saved-reflection').textContent = session.reflection || 'No reflection entered.';
 }
-function addClaim(value = '', evidence = '') {
-  const box = document.createElement('div'); box.className = 'claim';
-  const label = document.createElement('label'); label.textContent = 'Profile statement';
-  const input = document.createElement('textarea'); input.value = value; input.maxLength = 200; input.rows = 2;
-  label.append(input);
-  const source = document.createElement('small'); source.textContent = evidence || 'Provided or edited by you; not independently verified.';
-  const remove = document.createElement('button'); remove.className = 'secondary'; remove.textContent = 'Remove';
-  remove.onclick = () => box.remove();
-  box.append(label, source, remove); $('claims').append(box);
+function renderProfileProcess() {
+  const draft = session?.profileDraft;
+  $('profile-usage-panel').hidden = !draft;
+  const u = draft?.usage;
+  $('profile-usage').textContent = u ? `Profile requests: ${u.attempts} · Repairs: ${u.repairs} · Reported input/output: ${u.inputTokens}/${u.outputTokens} tokens · Cache read/write: ${u.cacheReadTokens}/${u.cacheWriteTokens}. ${u.unknownUsageRequests} request(s) have unknown usage. Check the provider Console for billing.` : '';
+  $('profile-recovery').hidden = !draft || !['building', 'resolving'].includes(draft.status) || Boolean(job);
+  $('retry-profile').disabled = Boolean(job) || !draft?.retryAllowed;
+  $('profile-pending-answer').textContent = draft?.pendingAnswer
+    ? `Your answer is saved: ${draft.pendingAnswer.text}` : '';
+  const question = draft?.questions.find(q => q.status === 'pending');
+  $('clarification-question').textContent = question?.question || '';
+  $('clarification-reason').textContent = question?.reason || '';
 }
-function editProfile(manual = false) {
-  $('cancel-edit').hidden = session.stage === 'review';
-  localStage = 'review'; $('claims').replaceChildren();
-  const facts = session.facts;
-  if (facts.length) facts.forEach(fact => addClaim(fact));
-  else if (!manual && session.claims.length) session.claims.forEach(c => addClaim(c.text, `${c.sourceId}: “${c.quote}”`));
-  else { addClaim(); addClaim(); }
-  $('review-note').textContent = manual
-    ? 'Manual profile: write two to six things you want the twin to know. These are your statements, not AI-inferred findings.'
-    : session.notice || 'Correcting the profile starts a fresh scene and clears the old twin conversation.';
-  render(); busy();
+function profileGroup(topic) {
+  let group = [...$('claims').children].find(item => item.dataset.topic === topic);
+  if (!group) {
+    group = document.createElement('details'); group.className = 'profile-group'; group.open = true; group.dataset.topic = topic;
+    const title = document.createElement('summary'); title.textContent = profileTopics[topic] || topic;
+    group.append(title); $('claims').append(group);
+  }
+  return group;
+}
+function addProfileEntry(entry = { id: '', topic: 'role', text: '', scope: '', included: true, evidence: [] }) {
+  const card = document.createElement('div'); card.className = 'claim'; card.dataset.entryId = entry.id;
+  const includeLabel = document.createElement('label'); includeLabel.className = 'check';
+  const include = document.createElement('input'); include.type = 'checkbox'; include.className = 'include-entry'; include.checked = entry.included !== false;
+  includeLabel.append(include, document.createTextNode(' Include in my twin'));
+  const topicLabel = document.createElement('label'); topicLabel.textContent = 'Category';
+  const category = document.createElement('select'); category.className = 'entry-topic';
+  for (const [id, name] of Object.entries(profileTopics)) {
+    const option = document.createElement('option'); option.value = id; option.textContent = name; category.append(option);
+  }
+  category.value = entry.topic; topicLabel.append(category);
+  const statementLabel = document.createElement('label'); statementLabel.textContent = 'Statement';
+  const statement = document.createElement('textarea'); statement.className = 'entry-text'; statement.value = entry.text;
+  statement.maxLength = profileLimits.statement; statement.rows = 2; statementLabel.append(statement);
+  const scopeLabel = document.createElement('label'); scopeLabel.textContent = 'Audience or context (optional)';
+  const scope = document.createElement('input'); scope.className = 'entry-scope'; scope.value = entry.scope || '';
+  scope.maxLength = profileLimits.scope; scopeLabel.append(scope);
+  const status = document.createElement('small'); status.className = 'entry-status';
+  status.textContent = entry.status === 'needs_review'
+    ? 'Unresolved: excluded by default. Check the wording before deliberately including it.'
+    : entry.origin === 'participant_edited' ? 'Written or edited by you; not independently verified.' : 'An interpretation to check, not an independently verified fact.';
+  const provenance = document.createElement('details'), title = document.createElement('summary'); title.textContent = 'Why this appeared'; provenance.append(title);
+  for (const source of entry.evidence || []) {
+    const p = document.createElement('p'); p.className = 'muted'; p.textContent = `${source.label}: “${source.quote}”`; provenance.append(p);
+  }
+  if (!entry.evidence?.length) { const p = document.createElement('p'); p.textContent = 'Provided by you in this profile editor.'; provenance.append(p); }
+  if (entry.wordingBeforeEdit) {
+    const p = document.createElement('p'); p.textContent = `Earlier interpretation, before your edit: ${entry.wordingBeforeEdit}`; provenance.append(p);
+  }
+  const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary'; remove.textContent = 'Remove';
+  remove.onclick = () => { const group = card.parentElement; card.remove(); if (!group.querySelector('.claim')) group.remove(); updateProfileCount(); };
+  category.onchange = () => {
+    const old = card.parentElement; profileGroup(category.value).append(card);
+    if (!old.querySelector('.claim')) old.remove(); updateProfileCount();
+  };
+  statement.oninput = scope.oninput = () => { status.textContent = 'Edited by you. Original quotations explain its origin, not proof of the new wording.'; updateProfileCount(); };
+  include.onchange = updateProfileCount;
+  card.append(includeLabel, topicLabel, statementLabel, scopeLabel, status, provenance, remove);
+  profileGroup(entry.topic).append(card); updateProfileCount();
+}
+function profileRows() {
+  return [...$('claims').querySelectorAll('.claim')].filter(card => card.querySelector('.include-entry').checked).map(card => ({
+    id: card.dataset.entryId, topic: card.querySelector('.entry-topic').value,
+    text: card.querySelector('.entry-text').value.trim(), scope: card.querySelector('.entry-scope').value.trim()
+  }));
+}
+function updateProfileCount() {
+  const entries = profileRows(), all = $('claims').querySelectorAll('.claim').length;
+  $('profile-count').textContent = `${entries.length} of ${all} statements included. There is no target score to fill.`;
+  $('confirm-profile').disabled = Boolean(job) || !$('approve-profile').checked || entries.length === 0 || entries.some(item => !item.text);
+  $('add-claim').disabled = Boolean(job) || all >= profileLimits.entries;
+  const unknown = Object.entries(profileTopics).filter(([id]) => id !== 'other' && !entries.some(item => item.topic === id));
+  $('profile-unknown').textContent = unknown.length ? unknown.map(([, label]) => label).join(', ') + '. These details will not be filled automatically.' : 'Every topic has at least one included statement. That is not a completeness or accuracy guarantee.';
+}
+function renderProfileEditor(force = false) {
+  const draft = session.profileDraft;
+  const key = `${session.profileVersion}:${session.profile ? 'confirmed' : draft?.id || 'none'}`;
+  if (!force && key === reviewKey) return;
+  reviewKey = key; $('claims').replaceChildren(); $('approve-profile').checked = false;
+  const source = session.profile?.entries || draft?.entries || [];
+  source.forEach(item => addProfileEntry(item));
+  if (!source.length) addProfileEntry();
+  const unresolved = session.profile ? session.profile.unresolved
+    : (draft?.questions || []).filter(q => ['unresolved', 'skipped'].includes(q.status));
+  $('profile-unresolved').hidden = unresolved.length === 0;
+  $('profile-unresolved').textContent = unresolved.length ? 'Unresolved questions: ' + unresolved.map(q => q.question).join(' ') + ' Related unconfirmed entries are excluded by default. Only explicitly included statements will guide the twin.' : '';
+  $('review-note').textContent = session.profile
+    ? 'Editing this profile starts a fresh twin conversation and regenerates its buttons; it does not redo the interview.'
+    : draft?.note || 'These statements retain their sources and context. Check the interpretation, not just whether the quoted words are present.';
+  $('cancel-edit').hidden = session.stage === 'review'; updateProfileCount();
+}
+function editProfile() { localStage = 'review'; renderProfileEditor(true); render(); busy(); }
+async function profileRequest(path, data, signal) {
+  setLoading('Preparing your profile…', 'Keeping interview evidence separate from sample interpretations and unknown details.');
+  try { session = await api(path, data, signal); }
+  catch (error) {
+    if (!signal.aborted) {
+      try { session = await api('/api/session', undefined, signal, 'GET'); } catch { /* Keep last state; never resubmit automatically. */ }
+    }
+    throw error;
+  } finally { if (!signal.aborted) { localStage = ''; render(); } }
 }
 async function* events(body) {
   if (!body) throw new Error('No response stream.');
@@ -298,29 +389,35 @@ function readSample() {
   };
 }
 $('sample-form').onsubmit = event => {
-  event.preventDefault();
-
-  run(async signal => {
-    setLoading(
-      'Building your profile…',
-      'Using your answers and optional work sample. You will review the result next.'
-    );
-
-    session = await api('/api/sample', readSample(), signal);
-    editProfile();
-  });
+  event.preventDefault(); run(signal => profileRequest('/api/sample', { ...readSample(), mode: 'build' }, signal));
 };
-$('manual').onclick = () => editProfile(true);
+$('manual').onclick = () => run(signal => profileRequest('/api/sample', { ...readSample(), mode: 'manual' }, signal));
+$('retry-profile').onclick = () => run(signal => profileRequest('/api/profile/retry', {
+  draftId: session.profileDraft.id, requestId: session.profileDraft.requestId
+}, signal));
+$('profile-notes').onclick = () => run(signal => profileRequest('/api/profile/notes', { draftId: session.profileDraft.id }, signal));
+async function submitClarification(kind, signal) {
+  const question = session.profileDraft.questions.find(item => item.status === 'pending');
+  try { await profileRequest('/api/profile/clarify', {
+    draftId: session.profileDraft.id, questionId: question.id, kind,
+    text: kind === 'answer' ? $('clarification-answer').value : ''
+  }, signal); }
+  finally {
+    if (!signal.aborted && (session.profileDraft?.pendingAnswer || session.profileDraft?.questions.find(q => q.status === 'pending')?.id !== question.id)) {
+      $('clarification-answer').value = '';
+    }
+  }
+}
+$('clarification-form').onsubmit = event => { event.preventDefault(); run(signal => submitClarification('answer', signal)); };
+$('skip-clarification').onclick = () => run(signal => submitClarification('skip', signal));
 $('edit-profile').onclick = () => editProfile();
 $('cancel-edit').onclick = () => { localStage = ''; render(); };
-$('add-claim').onclick = () => {
-  if ($('claims').children.length < 6) addClaim();
-};
+$('add-claim').onclick = () => { if ($('claims').querySelectorAll('.claim').length < profileLimits.entries) addProfileEntry(); };
+$('approve-profile').onchange = updateProfileCount;
 $('confirm-profile').onclick = () => run(async signal => {
-  const facts = [...$('claims').querySelectorAll('textarea')].map(el => el.value.trim()).filter(Boolean);
-  session = await api('/api/profile', { facts, sample: readSample() }, signal);
-  localStage = ''; render();
-  await prepareConversation(signal);
+  session = await api('/api/profile', { draftId: session.profileDraft?.id, profileVersion: session.profileVersion,
+    entries: profileRows(), acknowledged: $('approve-profile').checked }, signal);
+  localStage = ''; render(); await prepareConversation(signal);
 });
 $('open-scene').onclick = () => run(signal => talk('open', '', signal));
 $('retry-suggestions').onclick = () => run(signal => prepareConversation(signal));
@@ -339,19 +436,21 @@ $('reflection-form').onsubmit = event => {
 };
 $('reset').onclick = async () => {
   const oldToken = token;
-  job?.abort(); job = null; token = ''; session = null; localStage = ''; pending = '';
+  job?.abort(); job = null; token = ''; session = null; localStage = ''; pending = ''; reviewKey = '';
   document.querySelectorAll('form').forEach(form => form.reset());
   $('claims').replaceChildren(); $('intake-thread').replaceChildren(); $('twin-thread').replaceChildren();
   $('facts').replaceChildren(); $('saved-reflection').textContent = '';
+  for (const id of ['profile-unresolved', 'profile-unknown', 'limited-profile', 'twin-unknown', 'profile-count']) $(id).textContent = '';
+  $('profile-unresolved').hidden = true; $('limited-profile').hidden = true;
   $('twin-title').textContent = 'Your future self'; $('review-note').textContent = ''; $('metrics').textContent = '';
   errorMessage(); render(); busy();
   try { if (oldToken) await api('/api/session', undefined, undefined, 'DELETE', oldToken); }
   catch { errorMessage('Browser view cleared. Server deletion could not be confirmed; the old session expires after inactivity.'); }
 };
 $('export').onclick = () => {
-  if (!confirm('These notes contain your confirmed profile and conversation. Save them on this computer?')) return;
+  if (!confirm('These notes contain your confirmed profile, its evidence quotations and conversation. Save them on this computer?')) return;
   const notes = { exportedAt: new Date().toISOString(), label: 'AI-generated simulation, not a prediction',
-    facts: session.facts, conversation: session.messages, reflection: session.reflection, lastResponseMetrics: session.metrics };
+    profile: session.profile, facts: session.facts, conversation: session.messages, reflection: session.reflection, lastResponseMetrics: session.metrics };
   const url = URL.createObjectURL(new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = `session-notes-${Date.now()}.json`;
   link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -359,6 +458,7 @@ $('export').onclick = () => {
 async function initialize() {
   try {
     const info = await api('/api/info', undefined, undefined, 'GET');
+    profileTopics = info.profileTopics; profileLimits = info.profileLimits;
     const options = [{ id: 'none', label: 'None / not sure', sample: 'Do not infer a preference from these examples.' }, ...info.examples];
     for (const option of options) {
       const label = document.createElement('label');

@@ -1,3 +1,4 @@
+import { profileSubmission } from '../test-support/profile-fixture.mjs';
 import { withInterviewFixture, completeTestInterview } from '../test-support/interview-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -48,6 +49,7 @@ async function fixture(t) {
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${server.address().port}`;
   async function call(path, data, token = '', method = 'POST') {
+    if (path === '/api/profile' && Array.isArray(data?.facts)) data = await profileSubmission(base, token, data.facts, data.sample);
     const response = await fetch(base + path, {
       method, headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1', Authorization: `Bearer ${token}` },
       ...(data === undefined ? {} : { body: JSON.stringify(data) })

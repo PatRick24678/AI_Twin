@@ -1,6 +1,4 @@
-
-# Tatoma Future Self — local prototype
-[ALL WORKS & DESCRIPTIONS SUBJECT TO CHANGE]
+# Tatoma Future Self — private development prototype
 
 A text-first research demonstrator. The Node application runs locally, but the model-led interview, profile extraction,
 personal conversation starters and future-self replies now use Anthropic's hosted Claude API.
@@ -55,16 +53,67 @@ The developer usage panel accumulates reported interview tokens (including compl
 outputs). Failed/aborted requests with unavailable usage are marked incomplete. These are not invoices.
 No prompt caching is enabled by this commit; cache counters are recorded if returned by the API.
 
-### Temporary handoff (profile redesign is still increment 3)
+## Structured profile — increment 3
 
-The optional work-sample screen and the existing editable profile check remain after the interview.
-Only active tentative observations and their original source quotes are bridged to that builder;
-superseded/retracted claims are not re-extracted from the full transcript. Source IDs are no longer
-restricted to answer1 through answer4. This is not yet the final structured-profile design.
-The existing six-statement review limit remains, and the current twin still needs at least two
-participant-confirmed statements. Sparse interviews can end honestly; they do not produce a
-fictional professional disguised as a personalised twin. Manual statements remain optional.
-Sample-based interview follow-ups, a fictional demo fallback and the final review design are deferred.
+This increment replaces the six-flat-statement handoff. Active interview observations are copied
+without generative rewording into source-linked categories. Exact same-topic duplicates are merged;
+unknown areas remain unknown. Superseded or withdrawn observations never seed a new profile.
+Only a participant answer with a matching quote can seed an interview entry. This is provenance
+validation, NOT semantic truth verification. The original interviewer can still misinterpret an answer.
+
+One normal Claude request checks for consequential ambiguity and optionally examines a work sample.
+It may propose zero to two targeted clarification questions, not a compulsory extra questionnaire.
+A sample supports at most four contextual writing observations only when the participant says it is
+self-authored and typical. Borrowed samples remain drafting artifacts, not evidence of personality,
+responsibilities, tools, clients or professional history. Fictional style examples contribute only an
+explicitly selected exercise preference, never their fictional events.
+
+Send and Skip remain the clarification controls. A skipped or unresolved clarification leaves its
+related entries excluded by default. One answer produces at most one interpretation request; there
+are no recursive follow-up questions. Common explicit stopping/refusal phrases work without a model
+call. Participant-ending and blocked-topic state from the interview is respected during preparation.
+The model must identify the right focus/meaning; semantic boundary compliance still needs testing.
+
+The grouped final check is retained as a prototype handoff, not a decision that every final design
+must use a separate review screen. Participants can edit, remove, exclude or add statements and
+specify their audience/context. An acknowledgement is required before the backend marks included
+entries confirmed. Confirmation means user approval, not independent verification. Edits are labelled
+as participant changes; original quotes explain provenance, not proof of the edited wording.
+
+Profiles may contain more than six statements (up to 112 as a technical safety ceiling, not a target),
+with up to 240 characters per statement, 180 per context and 16,000 combined characters. One meaningful
+approved statement is sufficient for a limited twin. Zero entries cannot start a personalised twin;
+the participant can optionally supply a statement or reset. No fictional fallback impersonates them.
+
+An approved profile has a schema/version, category-scoped entries, unknown topics and unresolved
+areas. The old `facts` array is now a display/compatibility projection, not the source of truth.
+The twin and suggestions use the approved structured profile. They do not receive the original
+interview transcript, retired notes or evidence quotations during ordinary conversation. A sample
+is sent to the twin only for the explicit draft suggestion / demo action, labelled as an artifact,
+never as biography. A typed request cannot make the model read a sample that is not in its context:
+use the existing generated draft button. A dedicated comparison panel remains a later feature.
+
+Profile edits increment the version, clear chat/style history, and regenerate the three suggestions.
+This is still an in-memory session, NOT persistence across restarts or a login implementation.
+
+### Failure and cost controls
+
+`/api/sample` prepares a profile snapshot; `/api/profile/retry` processes a saved pending step;
+`/api/profile/clarify` records one answer or skip; `/api/profile/notes` explicitly falls back to available
+notes after a failure; `/api/profile` approves the current version. Requests carry the current draft,
+request, question or profile-version IDs where appropriate. Stale/foreign IDs are rejected.
+
+Normal profile processing is one audit request, plus at most two answer-interpretation requests.
+Grouping, editing, confirmation and skipping do not require inference. Invalid generated content gets
+one repair attempt. Connection/provider errors are not automatically retried. Retries are limited to
+four attempts per pending step and twelve across this profile workflow; input is preserved, not submitted
+again. Reset aborts pending work and cannot resurrect a deleted session. A labelled notes-only path
+remains available if the model fails or a limit is reached; it does not claim analysis succeeded.
+
+The profile output ceiling is 2,800 tokens per call, bounded server-side, while ordinary chat and
+other structured calls retain their previous defaults. A separate profile-usage panel accumulates
+returned usage, including rejected outputs and cache counters, and flags requests with unknown usage.
+A skipped analysis may leave ambiguities undetected; the participant must still check the notes.
 
 ## Behaviour preserved
 
@@ -110,15 +159,17 @@ usage accounting, HTTP failures, refusal/truncation, timeout, cancellation, meta
 an application-level profile-to-chat journey. Live credentials and real model quality must be
 checked locally by the developer.
 
-After this update the reconstructed previous code plus these changes passes 87 tests: the 66
-previous checks (with four legacy test fixtures updated to complete the new interview) plus 21
-new interview-runtime/HTTP checks. `test-support/interview-fixture.mjs` is a deterministic test
-helper, not a runtime question bank. Production code never imports it.
+This snapshot passes **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
+profile request shape, 28 new profile-core/builder tests, 12 new profile HTTP tests, and two adapter
+output-limit checks. The five older suites changed only where the old six-string confirmation setup
+no longer matched the structured profile contract. `test-support/profile-fixture.mjs` drives the real
+manual-draft and confirmation endpoints for regression scenarios; it is never imported by production.
 
-Focused checks: `node --test test/interview-state.test.mjs test/interviewer.test.mjs` (42 tests).
-Browser checks used simulated model responses and an HTTP bridge to the local test server,
-covering loading, failure/retry, skip, stop, reset, mobile rendering and the profile-to-twin flow.
-Real Claude behaviour, measured costs and live latency have not been validated by these tests.
+Focused checks: `node --test test/profile-core.test.mjs test/profile-http.test.mjs` (40 tests).
+Browser checks used simulated model responses and an HTTP bridge to the local test server, covering
+source-linked review, sample clarification, skipping, confirmation, editing, errors/retry, notes-only
+fallback, one-statement profiles, reset, and 390px mobile layout. No live Claude calls were made.
+Real model interpretation quality, inference latency and actual billed cost remain to be evaluated.
 
 The old Ollama adapter and its tests are intentionally retained. Normal startup uses Anthropic;
 changing back would require deliberately restoring the old adapter as the server default.
