@@ -13,7 +13,7 @@ import { INTERVIEW_TOPICS, INTERVIEW_LIMITS, INTERVIEW_TURN_SCHEMA } from '../li
 import { claudeSchema, MAX_PAYLOAD_BYTES } from '../lib/anthropic-model.mjs';
 
 const question = (topic, text, gap = '') => ({
-  acknowledgement: '', question: { topic, text, gap },
+  acknowledgement: '', question: { topic, text, gap, last: false },
   observations: [], boundaries: [], retractions: [], stopQuote: ''
 });
 function opening() {
@@ -80,6 +80,9 @@ test('interview prompt sends original early answers, latest answer and tentative
   assert.match(instructions, /not the twin or a salesperson/);
   assert.match(instructions, /untrusted reference data/);
   assert.match(instructions, /Do not re-add superseded/);
+  assert.match(instructions, /is NOT a request\s+to stop/);
+  assert.equal(data.pace.questionNumber, 2);
+  assert.equal(data.pace.pace, 'exploring');
 });
 
 test('one normal interview step uses one structured call and no text streaming callback', async () => {
@@ -163,7 +166,7 @@ test('a full-length interview with long answers and many notes fits the prompt a
   for (let i = 0; i < INTERVIEW_LIMITS.turns; i++) {
     const text = `Answer ${i}: ` + 'a'.repeat(perAnswer - 12);
     state = recordInterviewInput(state, { text });
-    if (i === INTERVIEW_LIMITS.turns - 1) break; // Measure the largest prompt: the final pending turn.
+    if (state.activeQuestion.last || i === INTERVIEW_LIMITS.turns - 1) break; // Largest prompt: the final pending turn.
     const value = question(topics[(i + 1) % topics.length], `Q${i} ` + 'q'.repeat(340), 'g'.repeat(200));
     value.acknowledgement = 'k'.repeat(200);
     value.observations = topics.slice(0, 6).map((topic, k) => ({ topic, statement: `S${i}-${k} ` + 's'.repeat(230),

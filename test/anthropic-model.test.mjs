@@ -205,7 +205,7 @@ test('HTTP app journey uses Claude transport while preserving confirmation, butt
   const result = wire.trim().split('\n').map(JSON.parse).at(-1);
   assert.equal(result.type, 'done');
   assert.ok(!wire.includes(KEY));
-  assert.equal(calls.length, 11); // Opening + four answers + three padding skips + profile + suggestions + twin.
+  assert.equal(calls.length, 9); // Opening + four answers + skipped last question + profile + suggestions + twin.
   assert.equal(result.session.metrics.outputTokens, 9);
   const info = await (await call('/api/info', undefined, 'GET')).json();
   assert.ok(!JSON.stringify(info).includes(KEY));

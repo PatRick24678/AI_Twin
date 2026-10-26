@@ -6,15 +6,16 @@ export function fixtureInterviewTurn(messages) {
   const data = JSON.parse(messages[1].content);
   const input = data.CURRENT_INPUT;
   const n = data.answeredOrSkippedTurns;
-  // Four core questions, then secondary topics until the minimum or three empty turns permit a finish.
+  // Four core questions, then secondary topics. From question 5 it offers "last"; the controller decides.
   const topics = ['role', 'friction', 'communication', 'retain', 'tasks', 'quality', 'desired_change',
     'decisions', 'ai_experience', 'dependencies', 'tools'];
-  const done = n >= 4 && (n >= data.limits.minTurnsBeforeFinish || data.consecutiveUninformativeTurns >= 3);
+  const done = Boolean(data.activeQuestion?.last) && Boolean(input);
   const value = {
     acknowledgement: '',
     question: done
-      ? { topic: 'none', text: '', gap: '' }
-      : { topic: topics[n % topics.length], text: `Fictional test question ${n + 1}?`, gap: n >= topics.length ? 'A further fictional detail.' : '' },
+      ? { topic: 'none', text: '', gap: '', last: false }
+      : { topic: topics[n % topics.length], text: `Fictional test question ${n + 1}?`,
+        gap: n >= topics.length ? 'A further fictional detail.' : '', last: n >= 4 },
     observations: [], boundaries: [], retractions: [], stopQuote: ''
   };
   if (input?.kind === 'answer') {

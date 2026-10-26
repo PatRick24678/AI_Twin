@@ -49,11 +49,14 @@ When a turn finally fails validation, the server terminal prints the validator's
 (`Interview turn rejected: …`), never participant text or provider errors.
 
 Normal turns make one model call. Invalid generated content gets at most one repair per request;
-manual retries are capped at four API attempts for the same turn, and 72 across an interview.
-The interview has at most 24 answered/skipped turns, 3,000 characters per answer and 24,000 total
-participant-answer characters. The interviewer may only finish on coverage after the core areas are
-addressed AND at least 10 answered/skipped turns; "stop" or three consecutive skipped/uninformative
-turns still end it earlier. Interview turns use a 2,400-token output ceiling and a 120,000-byte prompt
+manual retries are capped at four API attempts for the same turn, and 40 across an interview.
+The interview aims for about 6 questions: the opening says so, the interviewer signposts from question 5,
+and one question is marked `last` (allowed from question 5 once the core areas are addressed, required
+at 6 with the core addressed, and at 8 regardless). The controller sets or clears that flag itself rather
+than rejecting the turn. The answer or skip to the last question ends the interview with the model's
+closing line. Hard cap: 10 turns, 3,000 characters per answer, 24,000 in total. "Stop" or three consecutive
+skipped/uninformative turns still end it earlier; a question such as "how much longer?" does not.
+Interview turns use a 2,400-token output ceiling and a 120,000-byte prompt
 budget inside the adapter's 160,000-byte request limit. Exhausting a
 processing budget ends with an honest partial-state message, never invented profile details.
 The developer usage panel accumulates reported interview tokens (including completed invalid
@@ -166,8 +169,7 @@ usage accounting, HTTP failures, refusal/truncation, timeout, cancellation, meta
 an application-level profile-to-chat journey. Live credentials and real model quality must be
 checked locally by the developer.
 
-After the thorough-interview change (26 Oct 2026) and the skip fix, the suite passes **132 tests** on Node 24.21.0
-(the 129 below plus a full-length prompt-budget check, an opening-evidence check and a rejection-reason check). The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
+After the interview pacing change (26 Oct 2026) the suite passes **133 tests** on Node 24.21.0. The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
 profile request shape, 28 new profile-core/builder tests, 12 new profile HTTP tests, and two adapter
 output-limit checks. The five older suites changed only where the old six-string confirmation setup
 no longer matched the structured profile contract. `test-support/profile-fixture.mjs` drives the real

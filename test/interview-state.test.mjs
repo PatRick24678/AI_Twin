@@ -5,13 +5,13 @@ import {
 } from '../lib/interview-contract.mjs';
 import {
   createInterview, recordInterviewInput, applyInterviewTurn,
-  availableTopics, workingProfile
+  availableTopics, workingProfile, interviewPace
 } from '../lib/interview-state.mjs';
 
 // These fabricated outputs test the rules, not a real model's understanding.
 function output(topic = 'role', text = 'What do you do?') {
   return {
-    acknowledgement: '', question: { topic, text, gap: '' },
+    acknowledgement: '', question: { topic, text, gap: '', last: false },
     observations: [], boundaries: [], retractions: [], stopQuote: ''
   };
 }
@@ -217,7 +217,7 @@ test('an applied response cannot be replayed or used in another interview', () =
 
 test('an opening cannot fabricate a profile or immediately finish', () => {
   const state = createInterview();
-  assert.throws(() => apply(state, finished()), /finish before/);
+  assert.throws(() => apply(state, finished()), /end abruptly/);
   const value = output();
   value.observations = [{
     topic: 'role',
@@ -250,7 +250,17 @@ test('three uninformative turns permit an honest sparse ending, not invented fac
   assert.equal(workingProfile(state).unknownTopics.length, Object.keys(INTERVIEW_TOPICS).length);
 });
 
-test('one rich answer covering every core area cannot end the interview before the minimum', () => {
+// Answers the active question with one note on its topic, then asks `next` (topic, last flag).
+function step(state, i, topic, last = false) {
+  const asked = state.activeQuestion.topic;
+  state = answer(state, `Concrete fictional answer ${i}.`);
+  const value = output(topic, `Unique question ${i}?`);
+  value.question.gap = 'A further concrete detail.'; value.question.last = last;
+  value.observations = [note(state, asked, `Detail ${i}.`)];
+  return apply(state, value);
+}
+
+test('a rich first answer cannot end abruptly; the last question comes at the target and is signposted', () => {
   let state = answer(
     opening(),
     'I coordinate projects, review updates, dislike delays, write briefly and keep client calls.'
@@ -263,45 +273,55 @@ test('one rich answer covering every core area cannot end the interview before t
     ['communication', 'Writes briefly.'],
     ['retain', 'Wants to keep client calls.']
   ].map(([topic, statement]) => note(state, topic, statement));
-  assert.throws(() => apply(state, value), new RegExp(`at least ${INTERVIEW_LIMITS.minTurnsBeforeFinish}`));
-  value.question = { topic: 'tasks', text: 'Which tasks recur each week?', gap: '' };
+  assert.throws(() => apply(state, value), /end abruptly/);
+  value.question = { topic: 'tasks', text: 'Which tasks recur each week?', gap: '', last: true };
   state = apply(state, value);
-  const secondary = ['tasks', 'tools', 'quality', 'decisions', 'ai_experience', 'desired_change', 'dependencies'];
-  for (let i = 2; i <= INTERVIEW_LIMITS.minTurnsBeforeFinish; i++) {
-    const topic = state.activeQuestion.topic;
-    state = answer(state, `Concrete fictional answer ${i}.`);
-    const close = finished();
-    close.observations = [note(state, topic, `Detail ${i}.`)];
-    if (i === INTERVIEW_LIMITS.minTurnsBeforeFinish) { state = apply(state, close); break; }
-    assert.throws(() => apply(state, close), /before useful coverage/);
-    const next = output(secondary[i % secondary.length], `Unique follow-up ${i}?`);
-    next.question.gap = 'A further concrete detail.'; next.observations = close.observations;
-    state = apply(state, next);
-  }
-  assert.equal(state.finishReason, 'coverage');
-  assert.equal(state.turns, INTERVIEW_LIMITS.minTurnsBeforeFinish);
+  assert.equal(state.activeQuestion.last, false); // Question 2: too early, corrected rather than rejected.
+  state = step(state, 3, 'tools');
+  assert.deepEqual([interviewPace(state).pace, interviewPace(state).lastAllowed], ['exploring', false]);
+  state = step(state, 4, 'quality');
+  assert.deepEqual([interviewPace(state).pace, interviewPace(state).lastAllowed], ['wrapping_up', true]);
+  state = step(state, 5, 'decisions');
+  assert.equal(state.activeQuestion.last, false); // Question 5: allowed, but the model chose to continue.
+  state = step(state, 6, 'ai_experience');
+  assert.equal(state.activeQuestion.last, true); // Question 6 with the core covered: required.
+  state = answer(state, 'Curious, a little wary.');
+  const closing = output('desired_change', 'Ignored follow-up?');
+  closing.acknowledgement = 'Curious and a little wary sounds like a good place to start. Thank you.';
+  state = apply(state, closing);
+  assert.deepEqual([state.finishReason, state.turns, state.messages.at(-1).kind], ['coverage', 6, 'closing']);
+  assert.equal(state.messages.at(-1).text, closing.acknowledgement);
+  assert.equal(state.questions.length, 6);
   // Source-backed extractions are still interpretations, not participant approval.
   assert.ok(state.observations.every(n => n.status === 'tentative'));
 });
 
-test('the final allowed answer is retained, then the controller enforces the limit', () => {
-  const topics = Object.keys(INTERVIEW_TOPICS);
-  let state = opening();
-  for (let i = 0; i < INTERVIEW_LIMITS.turns; i++) {
-    const topic = state.activeQuestion.topic;
-    state = answer(state, `Concrete fictional answer number ${i}.`);
-    const value = output(
-      topics[(i + 1) % topics.length],
-      `Unique question ${i + 1}?`
-    );
-    value.question.gap = 'An additional concrete detail.';
-    value.observations = [note(state, topic, `Detail ${i}.`)];
-    state = apply(state, value);
+test('without core coverage the last question is forced by question 8; skipping it ends the interview', () => {
+  let state = opening('tasks');
+  assert.deepEqual(interviewPace(createInterview()), { questionNumber: 1, targetQuestions: INTERVIEW_LIMITS.targetTurns,
+    pace: 'exploring', lastAllowed: false, lastRequired: false });
+  const topics = ['tools', 'quality', 'decisions', 'ai_experience', 'desired_change', 'dependencies', 'tasks'];
+  for (let i = 2; i <= INTERVIEW_LIMITS.latestLastQuestion; i++) {
+    const pace = interviewPace(state);
+    assert.equal(pace.pace, i < INTERVIEW_LIMITS.targetTurns - 1 ? 'exploring' : 'wrapping_up');
+    assert.equal(pace.lastAllowed, i === INTERVIEW_LIMITS.latestLastQuestion); // Never earlier without the core.
+    state = step(state, i, topics[i - 2]);
   }
-  assert.equal(state.finishReason, 'turn_limit');
-  assert.equal(state.observations.length, INTERVIEW_LIMITS.turns);
-  assert.equal(state.questions.length, INTERVIEW_LIMITS.turns);
+  assert.equal(state.questions.length, INTERVIEW_LIMITS.latestLastQuestion);
+  assert.equal(state.activeQuestion.last, true);
+  state = apply(recordInterviewInput(state, { kind: 'skip' }), output('tools', 'Ignored?'));
+  assert.equal(state.finishReason, 'limited_context');
+  assert.match(state.messages.at(-1).text, /leave the remaining details unknown/); // Fallback closing.
   assert.throws(() => answer(state, 'Another answer.'));
+});
+
+test('a question about the interview itself is not a stop request', () => {
+  let state = answer(opening(), 'How much longer is this going to take?');
+  const value = output('retain', 'What part of your week would you never hand over?');
+  value.acknowledgement = 'Just a few more questions.';
+  state = apply(state, value);
+  assert.equal(state.status, 'waiting');
+  assert.equal(state.finishReason, null);
 });
 
 test('schemas reject unknown topics, oversized replies and arbitrary model fields', () => {
