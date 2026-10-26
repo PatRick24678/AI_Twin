@@ -6,16 +6,19 @@ export function fixtureInterviewTurn(messages) {
   const data = JSON.parse(messages[1].content);
   const input = data.CURRENT_INPUT;
   const n = data.answeredOrSkippedTurns;
-  const topics = ['role', 'friction', 'communication', 'retain'];
+  // Four core questions, then secondary topics until the minimum or three empty turns permit a finish.
+  const topics = ['role', 'friction', 'communication', 'retain', 'tasks', 'quality', 'desired_change',
+    'decisions', 'ai_experience', 'dependencies', 'tools'];
+  const done = n >= 4 && (n >= data.limits.minTurnsBeforeFinish || data.consecutiveUninformativeTurns >= 3);
   const value = {
     acknowledgement: '',
-    question: n < 4
-      ? { topic: topics[n], text: `Fictional test question ${n + 1}?`, gap: '' }
-      : { topic: 'none', text: '', gap: '' },
+    question: done
+      ? { topic: 'none', text: '', gap: '' }
+      : { topic: topics[n % topics.length], text: `Fictional test question ${n + 1}?`, gap: n >= topics.length ? 'A further fictional detail.' : '' },
     observations: [], boundaries: [], retractions: [], stopQuote: ''
   };
   if (input?.kind === 'answer') {
-    for (const topic of n === 1 ? ['role', 'workflow'] : [topics[n - 1]]) {
+    for (const topic of n === 1 ? ['role', 'workflow'] : [data.activeQuestion.topic]) {
       value.observations.push({
         topic, statement: input.text, sourceMessageId: input.id,
         quote: input.text, replacesId: ''
@@ -54,6 +57,10 @@ export async function completeTestInterview(base, token, answers) {
   state = await send('/api/interview/next', { requestId: state.interview.requestId });
   for (const text of answers) {
     state = await send('/api/answer', { questionId: state.interview.questionId, text });
+  }
+  // Skip the remaining questions: skips are never answers, so style and profile evidence stay unchanged.
+  while (state.interview.status === 'waiting') {
+    state = await send('/api/answer', { questionId: state.interview.questionId, kind: 'skip' });
   }
   assert.equal(state.interview.status, 'complete');
   return send('/api/interview/continue', {});

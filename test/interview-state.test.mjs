@@ -120,10 +120,30 @@ test('a skip blocks that focus without adding a personal observation', () => {
   assert.deepEqual(workingProfile(state).observations, []);
 });
 
-test('a skip event cannot be used as profile evidence', () => {
-  const state = recordInterviewInput(opening(), { kind: 'skip' });
+test('a skip event cannot be used as profile evidence; stray model fields are ignored, not fatal', () => {
+  let state = answer(opening(), 'I arrange business trips.');
+  const first = output('tools', 'Which tools do you use?');
+  first.observations = [note(state, 'role', 'Arranges business trips.')];
+  state = apply(state, first);
+  const kept = state.observations[0];
+  state = recordInterviewInput(state, { kind: 'skip' });
   const value = output('workflow', 'Describe a recent task.');
   value.observations = [note(state, 'role', 'Does not enjoy work.')];
+  value.boundaries = [{ topic: 'tools', reason: 'declined', sourceMessageId: state.pendingInput, quote: '' }];
+  value.retractions = [{ observationId: kept.id, sourceMessageId: kept.sourceMessageId, quote: kept.quote }];
+  value.stopQuote = 'Skipped this question.';
+  state = apply(state, value);
+  assert.equal(state.status, 'waiting');
+  assert.equal(state.activeQuestion.topic, 'workflow');
+  assert.deepEqual(workingProfile(state).observations.map(n => n.statement), ['Arranges business trips.']);
+  assert.equal(state.topics.tools.status, 'skipped'); // A pause, not a recorded refusal.
+  assert.equal(state.topics.tools.boundaryEvidence, null);
+});
+
+test('an opening still rejects stray evidence rather than ignoring it', () => {
+  const state = createInterview();
+  const value = output('role', 'What do you do?');
+  value.boundaries = [{ topic: 'tools', reason: 'declined', sourceMessageId: 'x', quote: 'x' }];
   assert.throws(() => apply(state, value), /participant answer/);
 });
 
@@ -230,7 +250,7 @@ test('three uninformative turns permit an honest sparse ending, not invented fac
   assert.equal(workingProfile(state).unknownTopics.length, Object.keys(INTERVIEW_TOPICS).length);
 });
 
-test('coverage can finish the interview without a fixed number of questions', () => {
+test('one rich answer covering every core area cannot end the interview before the minimum', () => {
   let state = answer(
     opening(),
     'I coordinate projects, review updates, dislike delays, write briefly and keep client calls.'
@@ -243,14 +263,28 @@ test('coverage can finish the interview without a fixed number of questions', ()
     ['communication', 'Writes briefly.'],
     ['retain', 'Wants to keep client calls.']
   ].map(([topic, statement]) => note(state, topic, statement));
+  assert.throws(() => apply(state, value), new RegExp(`at least ${INTERVIEW_LIMITS.minTurnsBeforeFinish}`));
+  value.question = { topic: 'tasks', text: 'Which tasks recur each week?', gap: '' };
   state = apply(state, value);
+  const secondary = ['tasks', 'tools', 'quality', 'decisions', 'ai_experience', 'desired_change', 'dependencies'];
+  for (let i = 2; i <= INTERVIEW_LIMITS.minTurnsBeforeFinish; i++) {
+    const topic = state.activeQuestion.topic;
+    state = answer(state, `Concrete fictional answer ${i}.`);
+    const close = finished();
+    close.observations = [note(state, topic, `Detail ${i}.`)];
+    if (i === INTERVIEW_LIMITS.minTurnsBeforeFinish) { state = apply(state, close); break; }
+    assert.throws(() => apply(state, close), /before useful coverage/);
+    const next = output(secondary[i % secondary.length], `Unique follow-up ${i}?`);
+    next.question.gap = 'A further concrete detail.'; next.observations = close.observations;
+    state = apply(state, next);
+  }
   assert.equal(state.finishReason, 'coverage');
-  assert.equal(state.turns, 1);
+  assert.equal(state.turns, INTERVIEW_LIMITS.minTurnsBeforeFinish);
   // Source-backed extractions are still interpretations, not participant approval.
   assert.ok(state.observations.every(n => n.status === 'tentative'));
 });
 
-test('the sixteenth answer is retained, then the controller enforces the limit', () => {
+test('the final allowed answer is retained, then the controller enforces the limit', () => {
   const topics = Object.keys(INTERVIEW_TOPICS);
   let state = opening();
   for (let i = 0; i < INTERVIEW_LIMITS.turns; i++) {
@@ -265,8 +299,8 @@ test('the sixteenth answer is retained, then the controller enforces the limit',
     state = apply(state, value);
   }
   assert.equal(state.finishReason, 'turn_limit');
-  assert.equal(state.observations.length, 16);
-  assert.equal(state.questions.length, 16);
+  assert.equal(state.observations.length, INTERVIEW_LIMITS.turns);
+  assert.equal(state.questions.length, INTERVIEW_LIMITS.turns);
   assert.throws(() => answer(state, 'Another answer.'));
 });
 

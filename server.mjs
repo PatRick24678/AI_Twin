@@ -96,6 +96,8 @@ export function createApp(model = new AnthropicModel()) {
         if (!res.writableEnded) json(res, 409, { error: 'The interview request was cancelled.' });
         return;
       }
+      // Validator rule text only, so a failed turn can be diagnosed from the terminal.
+      if (error.reasons?.length) console.warn(`Interview turn rejected: ${error.reasons.join(' | ')}`);
       // An accepted answer/skip is retained on failure. Retry generation, not input.
       if (error.status === 413 || !canRetryInterview(s.interview, s.interviewUsage)) {
         s.interview = endAfterProcessingLimit(s.interview,

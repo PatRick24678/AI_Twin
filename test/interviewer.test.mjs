@@ -9,6 +9,8 @@ import {
   INTERVIEW_BUDGET, recordControlledAnswer
 } from '../lib/interviewer.mjs';
 import { fixtureInterviewTurn } from '../test-support/interview-fixture.mjs';
+import { INTERVIEW_TOPICS, INTERVIEW_LIMITS, INTERVIEW_TURN_SCHEMA } from '../lib/interview-contract.mjs';
+import { claudeSchema, MAX_PAYLOAD_BYTES } from '../lib/anthropic-model.mjs';
 
 const question = (topic, text, gap = '') => ({
   acknowledgement: '', question: { topic, text, gap },
@@ -87,6 +89,7 @@ test('one normal interview step uses one structured call and no text streaming c
   assert.equal(model.calls.length, 1);
   assert.equal(model.calls[0].options.onToken, undefined);
   assert.ok(model.calls[0].options.schema.properties.observations);
+  assert.equal(model.calls[0].options.maxOutputTokens, INTERVIEW_BUDGET.maxOutputTokens);
   assert.equal(usage.inputTokens, 100);
   assert.equal(usage.outputTokens, 20);
   assert.equal(usage.cacheReadTokens, 5);
@@ -115,6 +118,16 @@ test('semantic rule violations also get one repair, without accepting a blocked 
   assert.equal(model.calls.length, 2);
 });
 
+test('a failed turn carries the validator reasons, without participant text', async () => {
+  const model = new FakeModel(), usage = newInterviewUsage();
+  const state = recordInterviewInput(opening(), { text: 'My private detail.' });
+  model.outputs = ['invalid json', question('role', 'What do you do?', 'Repeat.')];
+  const error = await advanceInterview(model, state, usage).catch(e => e);
+  assert.equal(error.status, 502);
+  assert.deepEqual(error.reasons, ['The response was not valid JSON.', 'This question has already been asked.']);
+  assert.ok(!error.reasons.join(' ').includes('private'));
+});
+
 test('API errors are not automatically retried and usage is honestly marked unknown', async () => {
   const model = new FakeModel(), usage = newInterviewUsage();
   model.outputs = [new AppError(429, 'Test rate limit')];
@@ -141,6 +154,26 @@ test('explicit skip preserves its boundary before generation and cannot become p
   assert.equal(state.messages.at(-1).kind, 'skip');
   assert.equal(state.messages.at(-1).text, '');
   assert.equal(state.messages.at(-1).displayText, "I'd rather not answer that");
+});
+
+test('a full-length interview with long answers and many notes fits the prompt and adapter budgets', () => {
+  const topics = Object.keys(INTERVIEW_TOPICS);
+  const perAnswer = Math.floor(INTERVIEW_BUDGET.answerCharactersTotal / INTERVIEW_LIMITS.turns);
+  let state = opening();
+  for (let i = 0; i < INTERVIEW_LIMITS.turns; i++) {
+    const text = `Answer ${i}: ` + 'a'.repeat(perAnswer - 12);
+    state = recordInterviewInput(state, { text });
+    if (i === INTERVIEW_LIMITS.turns - 1) break; // Measure the largest prompt: the final pending turn.
+    const value = question(topics[(i + 1) % topics.length], `Q${i} ` + 'q'.repeat(340), 'g'.repeat(200));
+    value.acknowledgement = 'k'.repeat(200);
+    value.observations = topics.slice(0, 6).map((topic, k) => ({ topic, statement: `S${i}-${k} ` + 's'.repeat(230),
+      sourceMessageId: state.pendingInput, quote: text.slice(0, 140), replacesId: '' }));
+    state = applyInterviewTurn(state, state.requestId, value);
+  }
+  const bytes = Buffer.byteLength(JSON.stringify(interviewMessages(state, 'r'.repeat(300))));
+  assert.ok(bytes <= INTERVIEW_BUDGET.promptBytes, `${bytes} prompt bytes`);
+  const schemaBytes = Buffer.byteLength(JSON.stringify(claudeSchema(INTERVIEW_TURN_SCHEMA)));
+  assert.ok(INTERVIEW_BUDGET.promptBytes + schemaBytes + 2000 <= MAX_PAYLOAD_BYTES);
 });
 
 test('per-turn and overall request budgets reject before another API request', async () => {

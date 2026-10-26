@@ -3,7 +3,7 @@ import { fixtureInterviewTurn, completeTestInterview } from '../test-support/int
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { AnthropicModel, claudeSchema } from '../lib/anthropic-model.mjs';
+import { AnthropicModel, claudeSchema, MAX_PAYLOAD_BYTES } from '../lib/anthropic-model.mjs';
 import { createApp } from '../server.mjs';
 
 const KEY = 'test-only-placeholder-not-a-real-key';
@@ -160,7 +160,7 @@ test('invalid configuration and oversized prompts fail before network requests',
   assert.throws(() => new AnthropicModel({ apiKey: '' }));
   assert.throws(() => new AnthropicModel({ apiKey: KEY, name: 'not-approved' }));
   const { model, calls } = mock();
-  await assert.rejects(model.chat([{ role: 'user', content: 'x'.repeat(65000) }]));
+  await assert.rejects(model.chat([{ role: 'user', content: 'x'.repeat(MAX_PAYLOAD_BYTES + 1000) }]));
   assert.equal(calls.length, 0);
 });
 
@@ -205,7 +205,7 @@ test('HTTP app journey uses Claude transport while preserving confirmation, butt
   const result = wire.trim().split('\n').map(JSON.parse).at(-1);
   assert.equal(result.type, 'done');
   assert.ok(!wire.includes(KEY));
-  assert.equal(calls.length, 8); // Opening + four answers + profile + suggestions + twin.
+  assert.equal(calls.length, 11); // Opening + four answers + three padding skips + profile + suggestions + twin.
   assert.equal(result.session.metrics.outputTokens, 9);
   const info = await (await call('/api/info', undefined, 'GET')).json();
   assert.ok(!JSON.stringify(info).includes(KEY));

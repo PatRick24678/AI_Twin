@@ -43,11 +43,18 @@ and double submission cannot silently become another turn. Reset cancels pending
 Some exact stop/skip phrases are handled without model interpretation. Nuanced natural-language
 refusal/stopping intent and semantic relevance still depend on model behaviour and need real tests.
 A quote check alone does not establish whether the interpretation is correct.
+A skip has no text, so any notes, boundaries, retractions or stop signal the model returns for a
+skip are ignored rather than failing the turn; the skipped topic is paused by the controller itself.
+When a turn finally fails validation, the server terminal prints the validator's rule messages
+(`Interview turn rejected: …`), never participant text or provider errors.
 
 Normal turns make one model call. Invalid generated content gets at most one repair per request;
-manual retries are capped at four API attempts for the same turn, and 48 across an interview.
-The interview has at most 16 answered/skipped turns, 3,000 characters per answer and 12,000 total
-participant-answer characters. Request payload checks provide another limit. Exhausting a
+manual retries are capped at four API attempts for the same turn, and 72 across an interview.
+The interview has at most 24 answered/skipped turns, 3,000 characters per answer and 24,000 total
+participant-answer characters. The interviewer may only finish on coverage after the core areas are
+addressed AND at least 10 answered/skipped turns; "stop" or three consecutive skipped/uninformative
+turns still end it earlier. Interview turns use a 2,400-token output ceiling and a 120,000-byte prompt
+budget inside the adapter's 160,000-byte request limit. Exhausting a
 processing budget ends with an honest partial-state message, never invented profile details.
 The developer usage panel accumulates reported interview tokens (including completed invalid
 outputs). Failed/aborted requests with unavailable usage are marked incomplete. These are not invoices.
@@ -159,7 +166,8 @@ usage accounting, HTTP failures, refusal/truncation, timeout, cancellation, meta
 an application-level profile-to-chat journey. Live credentials and real model quality must be
 checked locally by the developer.
 
-This snapshot passes **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
+After the thorough-interview change (26 Oct 2026) and the skip fix, the suite passes **132 tests** on Node 24.21.0
+(the 129 below plus a full-length prompt-budget check, an opening-evidence check and a rejection-reason check). The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
 profile request shape, 28 new profile-core/builder tests, 12 new profile HTTP tests, and two adapter
 output-limit checks. The five older suites changed only where the old six-string confirmation setup
 no longer matched the structured profile contract. `test-support/profile-fixture.mjs` drives the real
