@@ -60,6 +60,10 @@ The interviewer leads: each question is a `follow_up` or a `new_area`. A new are
 asked, chosen from a person-first agenda (role, what they keep/enjoy, friction, AI, communication, desired
 change, then process details). After a skip, or after one follow-up, the next question must be a new area.
 That rule relaxes once no unasked topics remain.
+The prompt asks for a warm, curious voice: optional, specific acknowledgements and varied question shapes
+(curiosity, small hypotheticals, either/or). As a safety net, the controller strips stock filler sentences
+("Thanks for letting me know.", "That makes sense.", "X can definitely be Y") from acknowledgements on
+question turns instead of rejecting the turn. Closing lines are left as written.
 Interview turns use a 2,400-token output ceiling and a 120,000-byte prompt
 budget inside the adapter's 160,000-byte request limit. Exhausting a
 processing budget ends with an honest partial-state message, never invented profile details.
@@ -173,7 +177,7 @@ usage accounting, HTTP failures, refusal/truncation, timeout, cancellation, meta
 an application-level profile-to-chat journey. Live credentials and real model quality must be
 checked locally by the developer.
 
-After the interview pacing and agenda changes (26 Oct 2026) the suite passes **136 tests** on Node 24.21.0. The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
+After the interview pacing, agenda and voice changes (26 Oct 2026) the suite passes **137 tests** on Node 24.21.0. The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
 profile request shape, 28 new profile-core/builder tests, 12 new profile HTTP tests, and two adapter
 output-limit checks. The five older suites changed only where the old six-string confirmation setup
 no longer matched the structured profile contract. `test-support/profile-fixture.mjs` drives the real

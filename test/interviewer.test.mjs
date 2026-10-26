@@ -84,6 +84,7 @@ test('interview prompt sends original early answers, latest answer and tentative
   assert.equal(data.pace.questionNumber, 2);
   assert.equal(data.pace.pace, 'exploring');
   assert.match(instructions, /YOU LEAD THE INTERVIEW/);
+  assert.match(instructions, /VOICE:[\s\S]*Never use stock filler[\s\S]*Tone illustrations only/);
   assert.match(instructions, /about the PERSON, not only their process/);
   // The person-first agenda order, minus the role question already asked.
   assert.deepEqual(data.unexploredAgenda.slice(0, 4), ['retain', 'friction', 'ai_experience', 'communication']);

@@ -5,7 +5,7 @@ import {
 } from '../lib/interview-contract.mjs';
 import {
   createInterview, recordInterviewInput, applyInterviewTurn,
-  availableTopics, workingProfile, interviewPace, unexploredAgenda, mustChangeSubject
+  availableTopics, workingProfile, interviewPace, unexploredAgenda, mustChangeSubject, withoutStockPhrases
 } from '../lib/interview-state.mjs';
 
 // These fabricated outputs test the rules, not a real model's understanding.
@@ -381,4 +381,19 @@ test('once no unexplored areas remain, consecutive follow-ups are allowed again'
   more.question.gap = 'Priorities.'; more.question.move = 'follow_up';
   more.observations = [note(state, 'role', 'Interviews and calls.')];
   assert.equal(apply(state, more).followUpStreak, 2);
+});
+
+test('stock filler is stripped from acknowledgements; specific reactions and closings are kept', () => {
+  for (const stock of ['Thanks for letting me know.', 'Thank you!', 'Thanks, that gives a clear picture of your day.',
+    "That's really helpful.", 'That makes sense.', 'Feedback delays can definitely be frustrating.']) {
+    assert.equal(withoutStockPhrases(stock), '', stock);
+  }
+  assert.equal(withoutStockPhrases('Thanks for sharing. Weeks? That is a long time to keep someone waiting.'),
+    'Weeks? That is a long time to keep someone waiting.');
+  assert.equal(withoutStockPhrases('Just two more questions.'), 'Just two more questions.');
+  let state = answer(opening(), 'Feedback takes weeks.');
+  const value = output('retain', 'What would you never hand over?');
+  value.acknowledgement = 'Thanks for letting me know.';
+  state = apply(state, value);
+  assert.equal(state.messages.at(-1).text, 'What would you never hand over?');
 });
