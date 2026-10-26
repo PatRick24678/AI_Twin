@@ -13,9 +13,9 @@ export function fixtureInterviewTurn(messages) {
   const value = {
     acknowledgement: '',
     question: done
-      ? { topic: 'none', text: '', gap: '', last: false }
+      ? { topic: 'none', text: '', gap: '', move: 'new_area', last: false }
       : { topic: topics[n % topics.length], text: `Fictional test question ${n + 1}?`,
-        gap: n >= topics.length ? 'A further fictional detail.' : '', last: n >= 4 },
+        gap: n >= topics.length ? 'A further fictional detail.' : '', move: 'new_area', last: n >= 4 },
     observations: [], boundaries: [], retractions: [], stopQuote: ''
   };
   if (input?.kind === 'answer') {

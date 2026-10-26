@@ -5,13 +5,13 @@ import {
 } from '../lib/interview-contract.mjs';
 import {
   createInterview, recordInterviewInput, applyInterviewTurn,
-  availableTopics, workingProfile, interviewPace
+  availableTopics, workingProfile, interviewPace, unexploredAgenda, mustChangeSubject
 } from '../lib/interview-state.mjs';
 
 // These fabricated outputs test the rules, not a real model's understanding.
 function output(topic = 'role', text = 'What do you do?') {
   return {
-    acknowledgement: '', question: { topic, text, gap: '', last: false },
+    acknowledgement: '', question: { topic, text, gap: '', move: 'new_area', last: false },
     observations: [], boundaries: [], retractions: [], stopQuote: ''
   };
 }
@@ -100,7 +100,7 @@ test('a bare yes cannot become blanket confirmation of invented personal details
 test('one unsuccessful clarification is allowed, but a third probe is blocked', () => {
   let state = answer(opening(), 'Admin.');
   const clarify = output('role', 'What is one task you did today?');
-  clarify.question.gap = 'No concrete responsibility has been described.';
+  clarify.question.gap = 'No concrete responsibility has been described.'; clarify.question.move = 'follow_up';
   state = apply(state, clarify);
   state = answer(state, 'Not sure.');
   const third = output('role', 'Can you give me more about your role?');
@@ -231,9 +231,10 @@ test('an opening cannot fabricate a profile or immediately finish', () => {
 
 test('follow-ups must identify a gap; near-identical punctuation is not a new question', () => {
   const state = answer(opening(), 'Admin.');
-  assert.throws(() => apply(state, output('role', 'What is a typical task?')), /unresolved gap/);
+  const typical = output('role', 'What is a typical task?'); typical.question.move = 'follow_up';
+  assert.throws(() => apply(state, typical), /unresolved gap/);
   const repeated = output('role', 'WHAT DO YOU DO!');
-  repeated.question.gap = 'Still unclear.';
+  repeated.question.gap = 'Still unclear.'; repeated.question.move = 'follow_up';
   assert.throws(() => apply(state, repeated), /already been asked/);
 });
 
@@ -256,6 +257,7 @@ function step(state, i, topic, last = false) {
   state = answer(state, `Concrete fictional answer ${i}.`);
   const value = output(topic, `Unique question ${i}?`);
   value.question.gap = 'A further concrete detail.'; value.question.last = last;
+  value.question.move = state.topics[topic].asked ? 'follow_up' : 'new_area';
   value.observations = [note(state, asked, `Detail ${i}.`)];
   return apply(state, value);
 }
@@ -274,7 +276,7 @@ test('a rich first answer cannot end abruptly; the last question comes at the ta
     ['retain', 'Wants to keep client calls.']
   ].map(([topic, statement]) => note(state, topic, statement));
   assert.throws(() => apply(state, value), /end abruptly/);
-  value.question = { topic: 'tasks', text: 'Which tasks recur each week?', gap: '', last: true };
+  value.question = { topic: 'tasks', text: 'Which tasks recur each week?', gap: '', move: 'new_area', last: true };
   state = apply(state, value);
   assert.equal(state.activeQuestion.last, false); // Question 2: too early, corrected rather than rejected.
   state = step(state, 3, 'tools');
@@ -334,4 +336,49 @@ test('schemas reject unknown topics, oversized replies and arbitrary model field
   value.acknowledgement = '';
   value.runShell = 'no';
   assert.throws(() => validateInterviewTurn(value));
+});
+
+test('after a skip the interviewer must open a new area, not a similar-sounding follow-up', () => {
+  let state = answer(opening(), 'I recruit salespeople.');
+  const first = output('friction', 'What slows your hiring down?');
+  first.observations = [note(state, 'role', 'Recruits salespeople.')];
+  state = recordInterviewInput(apply(state, first), { kind: 'skip' });
+  assert.equal(mustChangeSubject(state), true);
+  const similar = output('role', 'Which part of recruiting feels slowest?');
+  similar.question.gap = 'Slowdowns.'; similar.question.move = 'follow_up';
+  assert.throws(() => apply(state, similar), /After a skip, change the subject.*retain, ai_experience/);
+  assert.throws(() => apply(state, { ...similar, question: { ...similar.question, move: 'new_area' } }), /not asked about yet/);
+  state = apply(state, output('retain', 'Which part of your job would you never hand over?'));
+  assert.equal(state.followUpStreak, 0);
+});
+
+test('at most one follow-up in a row; the agenda then decides the next area', () => {
+  let state = answer(opening(), 'I recruit salespeople.');
+  const follow = output('role', 'Who do you recruit for most often?');
+  follow.question.gap = 'Which teams.'; follow.question.move = 'follow_up';
+  follow.observations = [note(state, 'role', 'Recruits salespeople.')];
+  state = apply(state, follow);
+  assert.equal(state.followUpStreak, 1);
+  state = answer(state, 'Mostly the field sales team.');
+  assert.equal(mustChangeSubject(state), true);
+  const again = output('role', 'How big is that team?');
+  again.question.gap = 'Team size.'; again.question.move = 'follow_up';
+  assert.throws(() => apply(state, again), /already asked one follow-up/);
+  state = apply(state, output('ai_experience', 'How do you feel about AI showing up in hiring?'));
+  assert.equal(state.followUpStreak, 0);
+});
+
+test('once no unexplored areas remain, consecutive follow-ups are allowed again', () => {
+  let state = answer(opening(), 'Only my role, nothing else please.');
+  const value = output('role', 'What does a normal day look like?');
+  value.question.gap = 'Ordinary day.'; value.question.move = 'follow_up';
+  value.boundaries = Object.keys(INTERVIEW_TOPICS).filter(id => id !== 'role').map(topic => ({
+    topic, reason: 'declined', sourceMessageId: state.pendingInput, quote: 'nothing else please' }));
+  state = apply(state, value);
+  assert.deepEqual(unexploredAgenda(state), []);
+  state = answer(state, 'Interviews and calls.');
+  const more = output('role', 'Which calls matter most to you?');
+  more.question.gap = 'Priorities.'; more.question.move = 'follow_up';
+  more.observations = [note(state, 'role', 'Interviews and calls.')];
+  assert.equal(apply(state, more).followUpStreak, 2);
 });

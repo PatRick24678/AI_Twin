@@ -56,6 +56,10 @@ at 6 with the core addressed, and at 8 regardless). The controller sets or clear
 than rejecting the turn. The answer or skip to the last question ends the interview with the model's
 closing line. Hard cap: 10 turns, 3,000 characters per answer, 24,000 in total. "Stop" or three consecutive
 skipped/uninformative turns still end it earlier; a question such as "how much longer?" does not.
+The interviewer leads: each question is a `follow_up` or a `new_area`. A new area must open a topic not yet
+asked, chosen from a person-first agenda (role, what they keep/enjoy, friction, AI, communication, desired
+change, then process details). After a skip, or after one follow-up, the next question must be a new area.
+That rule relaxes once no unasked topics remain.
 Interview turns use a 2,400-token output ceiling and a 120,000-byte prompt
 budget inside the adapter's 160,000-byte request limit. Exhausting a
 processing budget ends with an honest partial-state message, never invented profile details.
@@ -169,7 +173,7 @@ usage accounting, HTTP failures, refusal/truncation, timeout, cancellation, meta
 an application-level profile-to-chat journey. Live credentials and real model quality must be
 checked locally by the developer.
 
-After the interview pacing change (26 Oct 2026) the suite passes **133 tests** on Node 24.21.0. The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
+After the interview pacing and agenda changes (26 Oct 2026) the suite passes **136 tests** on Node 24.21.0. The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
 profile request shape, 28 new profile-core/builder tests, 12 new profile HTTP tests, and two adapter
 output-limit checks. The five older suites changed only where the old six-string confirmation setup
 no longer matched the structured profile contract. `test-support/profile-fixture.mjs` drives the real

@@ -13,7 +13,7 @@ import { INTERVIEW_TOPICS, INTERVIEW_LIMITS, INTERVIEW_TURN_SCHEMA } from '../li
 import { claudeSchema, MAX_PAYLOAD_BYTES } from '../lib/anthropic-model.mjs';
 
 const question = (topic, text, gap = '') => ({
-  acknowledgement: '', question: { topic, text, gap, last: false },
+  acknowledgement: '', question: { topic, text, gap, move: 'new_area', last: false },
   observations: [], boundaries: [], retractions: [], stopQuote: ''
 });
 function opening() {
@@ -83,6 +83,13 @@ test('interview prompt sends original early answers, latest answer and tentative
   assert.match(instructions, /is NOT a request\s+to stop/);
   assert.equal(data.pace.questionNumber, 2);
   assert.equal(data.pace.pace, 'exploring');
+  assert.match(instructions, /YOU LEAD THE INTERVIEW/);
+  assert.match(instructions, /about the PERSON, not only their process/);
+  // The person-first agenda order, minus the role question already asked.
+  assert.deepEqual(data.unexploredAgenda.slice(0, 4), ['retain', 'friction', 'ai_experience', 'communication']);
+  assert.equal(data.mustChangeSubject, false);
+  const skipped = JSON.parse(interviewMessages(recordInterviewInput(opening(), { kind: 'skip' }))[1].content);
+  assert.equal(skipped.mustChangeSubject, true);
 });
 
 test('one normal interview step uses one structured call and no text streaming callback', async () => {
@@ -124,7 +131,8 @@ test('semantic rule violations also get one repair, without accepting a blocked 
 test('a failed turn carries the validator reasons, without participant text', async () => {
   const model = new FakeModel(), usage = newInterviewUsage();
   const state = recordInterviewInput(opening(), { text: 'My private detail.' });
-  model.outputs = ['invalid json', question('role', 'What do you do?', 'Repeat.')];
+  const repeat = question('role', 'What do you do?', 'Repeat.'); repeat.question.move = 'follow_up';
+  model.outputs = ['invalid json', repeat];
   const error = await advanceInterview(model, state, usage).catch(e => e);
   assert.equal(error.status, 502);
   assert.deepEqual(error.reasons, ['The response was not valid JSON.', 'This question has already been asked.']);
