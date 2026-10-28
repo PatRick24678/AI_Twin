@@ -12,6 +12,7 @@ import {
 } from './lib/profile-core.mjs';
 import { advanceProfile, canRetryProfile } from './lib/profile-builder.mjs';
 import { AnthropicModel } from './lib/anthropic-model.mjs';
+import { createSpeech, SPEECH_LIMITS, AUDIO_TYPES } from './lib/speech-model.mjs';
 import { generateSuggestions } from './lib/suggestions.mjs';
 import { createInterview, recordInterviewInput } from './lib/interview-state.mjs';
 import { InterviewError, INTERVIEW_LIMITS } from './lib/interview-contract.mjs';
@@ -44,13 +45,28 @@ async function body(req) {
     return value;
   } catch { throw new AppError(400, 'Invalid JSON object.'); }
 }
-export function createApp(model = new AnthropicModel()) {
+// Raw audio for transcription only: bounded, held in memory for one request, never stored or logged.
+async function audioBody(req) {
+  const type = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  requireThat(Object.hasOwn(AUDIO_TYPES, type), 'Send a supported audio recording.', 415);
+  const tooLarge = 'The recording is too large. Record a shorter answer.';
+  requireThat(Number(req.headers['content-length'] || 0) <= SPEECH_LIMITS.audioBytes, tooLarge, 413);
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    requireThat(size <= SPEECH_LIMITS.audioBytes, tooLarge, 413);
+    chunks.push(chunk);
+  }
+  return { type, audio: Buffer.concat(chunks) };
+}
+export function createApp(model = new AnthropicModel(), speech = createSpeech()) {
   const sessions = new Map();
   const ttl = 30 * 60 * 1000;
   let modelBusy = false; // Keep one generation at a time for this private development prototype.
   function sweep() {
     for (const [token, s] of sessions) {
-      if (Date.now() - s.touched > ttl) { s.controller?.abort(); sessions.delete(token); }
+      if (Date.now() - s.touched > ttl) { s.controller?.abort(); s.speechController?.abort(); sessions.delete(token); }
     }
   }
   const timer = setInterval(sweep, 60000).unref();
@@ -161,7 +177,8 @@ export function createApp(model = new AnthropicModel()) {
         return res.end(data);
       }
       if (method === 'GET' && path === '/api/info') {
-        return json(res, 200, { examples: EXAMPLES, model: model.name, profileTopics: PROFILE_TOPICS, profileLimits: PROFILE_LIMITS });
+        return json(res, 200, { examples: EXAMPLES, model: model.name, profileTopics: PROFILE_TOPICS, profileLimits: PROFILE_LIMITS,
+          voice: { available: Boolean(speech), maxSeconds: SPEECH_LIMITS.seconds } });
       }
       if (method === 'GET' && path === '/api/health') {
         let result;
@@ -182,7 +199,7 @@ export function createApp(model = new AnthropicModel()) {
           answers: [], intake: [], interview: createInterview(),
           interviewUsage: newInterviewUsage(), interviewRetryAllowed: true,
           sample: null, claims: [], facts: [], profile: null, profileDraft: null, profileRetryAllowed: false, messages: [], reflection: '',
-          profileVersion: 0, suggestions: [], suggestionStatus: 'pending',
+          profileVersion: 0, suggestions: [], suggestionStatus: 'pending', transcriptions: 0,
           metrics: null, notice: '', touched: Date.now()
         };
         sessions.set(token, s);
@@ -193,11 +210,28 @@ export function createApp(model = new AnthropicModel()) {
       requireThat(s, 'Session missing or expired. Start a new one.', 401);
       s.touched = Date.now();
       if (method === 'DELETE' && path === '/api/session') {
-        s.controller?.abort(); sessions.delete(token);
+        s.controller?.abort(); s.speechController?.abort(); sessions.delete(token);
         return json(res, 200, { ok: true });
       }
       if (method === 'GET' && path === '/api/session') return json(res, 200, publicSession(s));
       requireThat(method === 'POST', 'Not found.', 404);
+      if (path === '/api/transcribe') {
+        requireThat(speech, 'Voice input is not configured on this server.', 503);
+        requireThat(s.stage === 'intake' && s.interview.status === 'waiting',
+          'Voice answers are available while an interview question is waiting.', 409);
+        requireThat(!s.speechController, 'A recording is already being transcribed.', 409);
+        requireThat(s.transcriptions < SPEECH_LIMITS.perSession,
+          'This session has reached its voice limit. Type your answers instead.', 429);
+        const { type, audio } = await audioBody(req);
+        requireThat(sessions.get(token) === s, 'Session was reset. Start again.', 401);
+        const controller = new AbortController(), disconnected = () => { if (!res.writableEnded) controller.abort(); };
+        s.speechController = controller; s.transcriptions += 1; res.on('close', disconnected);
+        try {
+          const result = await speech.transcribe(audio, { type, signal: controller.signal });
+          // Returned for the participant to check and edit; it is not an answer until they send it.
+          return json(res, 200, { text: result.text });
+        } finally { res.off('close', disconnected); delete s.speechController; s.touched = Date.now(); }
+      }
       const input = await body(req);
       requireThat(sessions.get(token) === s, 'Session was reset. Start again.', 401);
       requireThat(!s.controller, 'A response is already being generated.', 409);

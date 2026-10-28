@@ -114,6 +114,100 @@ function renderInterview() {
   $('interview-usage').textContent = usage
     ? `Interview requests: ${usage.attempts} · Repairs: ${usage.repairs} · Reported input: ${usage.inputTokens} · Output: ${usage.outputTokens} tokens. Cache read/write: ${usage.cacheReadTokens}/${usage.cacheWriteTokens}. ${usage.unknownUsageRequests ? `${usage.unknownUsageRequests} request(s) have unknown usage; these totals are incomplete. ` : ''}Check the provider Console for billing. No tokens are inferred from word counts.`
     : '';
+  renderVoice(); maybeSpeak();
+}
+
+// Optional voice mode: hear the interviewer, answer by speaking. All text stays visible and editable.
+const voice = { available: false, maxSeconds: 60, on: false, recorder: null, stream: null, chunks: [], cancelled: false, timer: null, spoken: '' };
+const RECORDING_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+const canSpeak = () => 'speechSynthesis' in window;
+function storeVoicePreference() { try { sessionStorage.setItem('voiceMode', voice.on ? 'on' : 'off'); } catch { /* Optional convenience. */ } }
+function englishVoice() {
+  const voices = canSpeak() ? speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('en')) : [];
+  return voices.find(v => v.localService) || voices[0] || null;
+}
+function speak(text) {
+  if (!canSpeak() || !text) return Promise.resolve();
+  speechSynthesis.cancel();
+  return new Promise(resolve => {
+    const utterance = new SpeechSynthesisUtterance(text), chosen = englishVoice();
+    if (chosen) utterance.voice = chosen;
+    utterance.lang = chosen?.lang || 'en-GB';
+    utterance.onend = utterance.onerror = () => { renderVoice(); resolve(); };
+    speechSynthesis.speak(utterance); renderVoice();
+  });
+}
+function stopVoice() {
+  if (canSpeak()) speechSynthesis.cancel();
+  if (voice.recorder) stopRecording(true);
+  renderVoice();
+}
+// Read each new question (and the closing line) once, then listen for the answer.
+function maybeSpeak() {
+  const interview = session?.interview;
+  if (!voice.available || !voice.on || job || !interview || session.stage !== 'intake') return;
+  const key = interview.status === 'waiting' ? interview.questionId : interview.status === 'complete' ? 'closing' : '';
+  if (!key || key === voice.spoken) return;
+  voice.spoken = key; $('voice-state').textContent = '';
+  const last = [...session.intake].reverse().find(message => message.role === 'assistant');
+  speak(last?.content || '').then(() => {
+    if (key !== 'closing' && voice.on && voice.spoken === key && session?.interview?.questionId === key &&
+      !job && !$('answer').value.trim()) startRecording();
+  });
+}
+async function startRecording() {
+  if (voice.recorder || job) return;
+  errorMessage();
+  try { voice.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch {
+    errorMessage('Microphone access was blocked or is unavailable. Type your answer, or allow the microphone and press "Speak my answer".');
+    return;
+  }
+  const mimeType = RECORDING_TYPES.find(type => MediaRecorder.isTypeSupported(type));
+  voice.chunks = []; voice.cancelled = false;
+  voice.recorder = new MediaRecorder(voice.stream, mimeType ? { mimeType } : {});
+  voice.recorder.ondataavailable = event => { if (event.data.size) voice.chunks.push(event.data); };
+  voice.recorder.onstop = finishRecording;
+  voice.recorder.start();
+  voice.timer = setTimeout(() => stopRecording(), voice.maxSeconds * 1000);
+  renderVoice();
+}
+function stopRecording(cancel = false) {
+  if (!voice.recorder || voice.recorder.state === 'inactive') return;
+  voice.cancelled = cancel; clearTimeout(voice.timer); voice.recorder.stop();
+}
+async function finishRecording() {
+  const type = (voice.recorder.mimeType || 'audio/webm').split(';')[0];
+  const recording = new Blob(voice.chunks, { type }), cancelled = voice.cancelled;
+  voice.chunks = []; voice.stream?.getTracks().forEach(track => track.stop());
+  voice.stream = null; voice.recorder = null; $('voice-state').textContent = ''; renderVoice();
+  if (cancelled || !recording.size) return;
+  await run(async signal => {
+    setLoading('Turning your answer into text…', 'Check the text before you send it. The recording is not stored by this app.');
+    const response = await fetch('/api/transcribe', { method: 'POST', signal, body: recording,
+      headers: { 'Content-Type': type, 'X-Future-Self': '1', Authorization: `Bearer ${token}` } });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Transcription failed. Type your answer instead.');
+    $('answer').value = [$('answer').value.trim(), result.text].filter(Boolean).join(' ');
+    $('voice-state').textContent = result.text ? 'Check or edit the text, then press Send.' : 'No speech was recognised. Try again or type your answer.';
+  });
+  $('answer').focus();
+}
+function renderVoice() {
+  const recording = Boolean(voice.recorder), speaking = canSpeak() && speechSynthesis.speaking;
+  $('voice-toggle').hidden = !voice.available;
+  $('voice-toggle').setAttribute('aria-pressed', String(voice.on));
+  $('voice-toggle-label').textContent = voice.on ? 'Voice on' : 'Voice off';
+  $('voice-controls').hidden = !(voice.available && voice.on && session?.interview?.status === 'waiting');
+  $('voice-controls').classList.toggle('recording', recording);
+  $('record').hidden = recording; $('stop-recording').hidden = !recording; $('cancel-recording').hidden = !recording;
+  $('stop-speaking').hidden = !speaking;
+  if (recording) $('voice-state').textContent = `Listening… press Stop when you are done (up to ${voice.maxSeconds} seconds).`;
+  const chosen = englishVoice();
+  $('voice-note').hidden = !(voice.available && voice.on);
+  $('voice-note').textContent = `Voice mode: questions are read aloud by ${chosen ? `“${chosen.name}”${chosen.localService ? ' on this device' : ', an online voice'}` : 'your browser’s voice'}. ` +
+    'Your recording is sent to Mistral (EU) only to turn it into text; this app does not store it, and Mistral may keep it for up to 30 days unless zero retention is enabled. ' +
+    'Nothing is sent as an answer until you press Send.';
 }
 
 function render() {
@@ -365,15 +459,26 @@ $('welcome-form').onsubmit = event => {
     await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
   });
 };
+$('voice-toggle').onclick = () => {
+  voice.on = !voice.on; storeVoicePreference();
+  if (voice.on) voice.spoken = ''; // Read the current question when switching on.
+  else stopVoice();
+  render();
+};
+$('record').onclick = () => { if (canSpeak()) speechSynthesis.cancel(); startRecording(); };
+$('stop-recording').onclick = () => stopRecording();
+$('cancel-recording').onclick = () => stopRecording(true);
+$('stop-speaking').onclick = () => { speechSynthesis.cancel(); renderVoice(); };
 $('answer-form').onsubmit = event => {
   event.preventDefault();
+  stopVoice();
   run(signal => interviewRequest('/api/answer', {
     questionId: session.interview.questionId, kind: 'answer', text: $('answer').value
   }, signal));
 };
-$('skip-question').onclick = () => run(signal => interviewRequest('/api/answer', {
+$('skip-question').onclick = () => { stopVoice(); run(signal => interviewRequest('/api/answer', {
   questionId: session.interview.questionId, kind: 'skip'
-}, signal));
+}, signal)); };
 $('retry-interview').onclick = () => run(signal => interviewRequest('/api/interview/next', {
   requestId: session.interview.requestId
 }, signal));
@@ -436,6 +541,7 @@ $('reflection-form').onsubmit = event => {
 };
 $('reset').onclick = async () => {
   const oldToken = token;
+  stopVoice(); voice.spoken = '';
   job?.abort(); job = null; token = ''; session = null; localStage = ''; pending = ''; reviewKey = '';
   document.querySelectorAll('form').forEach(form => form.reset());
   $('claims').replaceChildren(); $('intake-thread').replaceChildren(); $('twin-thread').replaceChildren();
@@ -459,6 +565,12 @@ async function initialize() {
   try {
     const info = await api('/api/info', undefined, undefined, 'GET');
     profileTopics = info.profileTopics; profileLimits = info.profileLimits;
+    // Voice needs the server's speech provider plus browser recording support.
+    voice.available = Boolean(info.voice?.available && 'MediaRecorder' in window && navigator.mediaDevices?.getUserMedia);
+    voice.maxSeconds = info.voice?.maxSeconds || voice.maxSeconds;
+    try { voice.on = voice.available && sessionStorage.getItem('voiceMode') === 'on'; } catch { voice.on = false; }
+    if (canSpeak()) speechSynthesis.onvoiceschanged = renderVoice;
+    render();
     const options = [{ id: 'none', label: 'None / not sure', sample: 'Do not infer a preference from these examples.' }, ...info.examples];
     for (const option of options) {
       const label = document.createElement('label');

@@ -47,6 +47,8 @@
   </section>
 
   <section id="intake" class="panel" hidden>
+    <button id="voice-toggle" type="button" class="secondary voice-toggle" aria-pressed="false" hidden
+      title="Voice mode: hear each question and answer by speaking">🎤 <span id="voice-toggle-label">Voice off</span></button>
     <p class="eyebrow">A conversation about your work</p>
     <h2>Let's get to know your workday.</h2>
     <p>I'm helping build your twin, not speaking as it yet. Brief answers are fine.
@@ -56,9 +58,17 @@
       <label>Your answer
         <textarea id="answer" maxlength="3000" required rows="3"></textarea>
       </label>
+      <div id="voice-controls" class="voice-controls" hidden>
+        <button id="record" type="button" class="secondary">🎙 Speak my answer</button>
+        <button id="stop-recording" type="button" hidden>■ Stop and transcribe</button>
+        <button id="cancel-recording" type="button" class="secondary" hidden>Cancel recording</button>
+        <button id="stop-speaking" type="button" class="secondary" hidden>Stop reading</button>
+        <span id="voice-state" class="muted" aria-live="polite"></span>
+      </div>
       <button>Send</button>
       <button id="skip-question" type="button" class="secondary">Skip this question</button>
     </form>
+    <p id="voice-note" class="muted" hidden></p>
     <div id="interview-recovery" hidden>
       <p class="muted">Waiting for the interviewer. If the request failed, retry its response;
         you do not need to submit your answer again.</p>
