@@ -397,3 +397,17 @@ test('stock filler is stripped from acknowledgements; specific reactions and clo
   state = apply(state, value);
   assert.equal(state.messages.at(-1).text, 'What would you never hand over?');
 });
+
+test('two vague answers close the topic; the rejection explains why and lists open topics', () => {
+  let state = answer(opening(), 'Ta-ta-ta-ta-ta-ta-ta.');
+  const reframe = output('role', 'If a colleague shadowed you on a Tuesday, what would they see?');
+  reframe.question.gap = 'No usable role information yet.'; reframe.question.move = 'follow_up';
+  state = answer(apply(state, reframe), 'Okay, I like how this turned out.');
+  const third = output('role', 'What is your job title?');
+  third.question.gap = 'Still unknown.'; third.question.move = 'follow_up';
+  assert.throws(() => apply(state, third),
+    /"role" is closed because two answers on it gave nothing new\. Move on with move new_area\. Choose one of: retain, friction, ai_experience/);
+  state = apply(state, output('retain', 'Which part of your week would you never hand over?'));
+  assert.equal(state.topics.role.status, 'unclear');
+  assert.equal(state.status, 'waiting');
+});
