@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import {
   AppError, requireThat, text, EXAMPLES, ACTIONS, sampleInput, publicSession
 } from './lib/domain.mjs';
-import { twinMessages } from './lib/prompts.mjs';
+import { twinMessages, problemMessages, PROBLEM_EXCHANGES } from './lib/prompts.mjs';
 import {
   PROFILE_TOPICS, PROFILE_LIMITS, createProfileDraft, answerProfileQuestion, confirmProfile, useProfileNotes
 } from './lib/profile-core.mjs';
@@ -201,7 +201,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
           name: text(input.name, 'Name or alias', 50, 1), stage: 'intake',
           answers: [], intake: [], interview: createInterview(),
           interviewUsage: newInterviewUsage(), interviewRetryAllowed: true,
-          sample: null, claims: [], facts: [], profile: null, profileDraft: null, profileRetryAllowed: false, messages: [], reflection: '',
+          sample: null, claims: [], facts: [], profile: null, profileDraft: null, profileRetryAllowed: false, messages: [], problemThreads: {}, reflection: '',
           profileVersion: 0, suggestions: [], suggestionStatus: 'pending', transcriptions: 0,
           metrics: null, notice: '', touched: Date.now()
         };
@@ -328,7 +328,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
         const profile = confirmProfile(s, input);
         s.profile = profile; s.profileVersion = profile.version;
         s.facts = profile.entries.map(item => item.text); // Read-only compatibility/display projection.
-        s.messages = []; s.stage = 'prepare'; s.metrics = null; s.notice = '';
+        s.messages = []; s.problemThreads = {}; s.stage = 'prepare'; s.metrics = null; s.notice = '';
         s.suggestions = []; s.suggestionStatus = 'pending';
         return json(res, 200, publicSession(s));
       }
@@ -353,9 +353,15 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
         requireThat(s.stage === 'twin', 'Confirm your profile, then prepare or explicitly skip the buttons.', 409);
         const action = input.action;
         requireThat(typeof action === 'string' && (['say', 'suggestion'].includes(action) || Object.hasOwn(ACTIONS, action)), 'Unknown action.');
-        requireThat((action === 'open') === (s.messages.length === 0), 'Open the scene once, then continue the conversation.', 409);
-        requireThat(s.messages.filter(m => m.role === 'user').length < 8,
-          'This demo is limited to eight exchanges. Finish or edit your profile to restart.', 409);
+        // A focused session on one confirmed problem has its own thread and limit, next to the main conversation.
+        const problem = input.problemId ? s.profile?.problems?.find(item => item.id === input.problemId) : null;
+        requireThat(!input.problemId || problem, 'This problem is not part of your current profile.', 400);
+        requireThat(!problem || ['open', 'say'].includes(action), 'A problem session takes your own messages only.');
+        const thread = problem ? (s.problemThreads[problem.id] ||= []) : s.messages, limit = problem ? PROBLEM_EXCHANGES : 8;
+        requireThat((action === 'open') === (thread.length === 0), 'Open the scene once, then continue the conversation.', 409);
+        requireThat(thread.filter(m => m.role === 'user').length < limit, problem
+          ? `Each problem session is limited to ${limit} exchanges. Pick another problem or go back to the conversation.`
+          : 'This demo is limited to eight exchanges. Finish or edit your profile to restart.', 409);
         let selected;
         if (action === 'suggestion') {
           selected = s.suggestions.find(item => item.id === input.suggestionId);
@@ -372,21 +378,22 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
             if (!res.write(JSON.stringify(event) + '\n')) await once(res, 'drain', { signal });
           };
           try {
-            const output = await model.chat(twinMessages(s, action, userText, {
-              includeSample: action === 'demo' || selected?.kind === 'draft', voice: input.voice === true }), {
+            const voiceMode = input.voice === true;
+            const output = await model.chat(problem ? problemMessages(s, problem, action, userText, { voice: voiceMode })
+              : twinMessages(s, action, userText, { includeSample: action === 'demo' || selected?.kind === 'draft', voice: voiceMode }), {
               signal, onToken: value => emit({ type: 'token', text: value })
             });
             signal.throwIfAborted();
             // Commit only a completed exchange, never an interrupted half-answer.
             if (action !== 'open') {
-              s.messages.push({
+              thread.push({
                 role: 'user',
                 content: selected ? selected.label : userText,
                 source: action === 'say' ? 'typed' : 'suggestion',
                 ...(selected ? { request: selected.request } : {})
               });
             }
-            s.messages.push({ role: 'assistant', content: output.text });
+            thread.push({ role: 'assistant', content: output.text });
             s.metrics = output.metrics;
             await emit({ type: 'done', session: publicSession(s) });
           } catch (error) {

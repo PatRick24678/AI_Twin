@@ -122,3 +122,14 @@ button:disabled { opacity: .55; cursor: wait; }
 .claim details { margin: 12px 0; overflow-wrap: anywhere; }
 .profile-warning { padding: 14px 18px; background: #fff8e6; border-left: 4px solid #b38525; border-radius: 6px; }
 #profile-pending-answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Top problems: cards in the twin; each opens its own focused session. */
+#problem-cards { clear: both; }
+.problem-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin: 10px 0 4px; }
+.problem-card { display: flex; flex-direction: column; border: 1px solid #d8e0d8; border-radius: 12px; padding: 14px; background: #fafbf8; }
+.problem-card p { flex: 1; margin: 6px 0 10px; font-size: .9rem; }
+.problem-card button { align-self: flex-start; margin: 0; }
+.problem-focus { clear: both; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 12px 16px; border-left: 4px solid #244f3e; background: #edf4ec; border-radius: 6px; }
+.problem-focus h3 { margin: 0; }
+.problem-focus .eyebrow { margin: 0; }

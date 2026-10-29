@@ -134,6 +134,19 @@ On confirmation:
 - `confirmProfile` stores `profile.problems` with an origin: `interview`, `participant_edited` or `participant`.
 - `profileContext()` passes only `{id, title, detail}` to the twin, never the quotes.
 
+In the twin, the confirmed problems appear as "Your top problems" cards. "Work on this" opens a focused session:
+- **Thread:** each session has its own thread, `session.problemThreads[id]`, and its own limit of 6 exchanges. It sits next to the main conversation (8 exchanges) and the starter buttons, which are unchanged.
+- **Opening:** a clearly hypothetical scene of how the future self handles the problem with AI support, what still needs the person, two or three first steps to try now, and one question.
+- **Later turns:** the session can produce drafts, checklists, reusable prompts or a structure for their information. These are labelled as unsent, unverified drafts.
+- **Honesty:** it never claims the problem is solved and never promises time savings.
+
+`/api/twin` takes an optional `problemId`:
+- It must belong to the current confirmed profile.
+- In a problem session only `open` and `say` are allowed.
+- Editing the profile resets all problem sessions.
+
+The problem text is sent as reference data, not as instructions. Voice mode works the same way in problem sessions.
+
 ## Structured profile — increment 3
 
 This increment replaces the six-flat-statement handoff. Active interview observations are copied

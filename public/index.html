@@ -178,10 +178,19 @@
     <h2 id="twin-title">Your future self</h2>
     <p id="limited-profile" class="profile-warning" hidden></p>
     <details><summary>What this version knows about you</summary><ul id="facts"></ul><p id="twin-unknown" class="muted"></p></details>
+    <div id="problem-cards" hidden>
+      <h3>Your top problems</h3>
+      <p class="muted">Pick one to work through it with your future self. Each has its own short session.</p>
+      <div id="problem-list" class="problem-list"></div>
+    </div>
+    <div id="problem-focus" class="problem-focus" hidden>
+      <div><p class="eyebrow">Working on</p><h3 id="problem-focus-title"></h3></div>
+      <button id="leave-problem" class="secondary" type="button">Back to the conversation</button>
+    </div>
     <div id="twin-thread" class="thread"></div>
     <button id="open-scene">Meet my future self</button>
     <div id="twin-controls" hidden>
-      <p class="muted">Personal starting points — or ask your own question.</p>
+      <p id="suggestions-intro" class="muted">Personal starting points — or ask your own question.</p>
       <div id="suggestions" class="actions" aria-label="Personal conversation starters"></div>
       <p id="suggestion-note" class="muted" hidden></p>
       <form id="message-form"><label>Talk to your future self

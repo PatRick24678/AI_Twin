@@ -1,6 +1,6 @@
 import { createSilenceDetector } from '/voice-activity.js';
 const $ = id => document.getElementById(id);
-let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '';
+let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '', activeProblem = '';
 let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180, problems: 5, problemTitle: 80, problemDetail: 240 };
 const stages = ['welcome', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done'];
 function errorMessage(message = '') { $('error').textContent = message; $('error').hidden = !message; }
@@ -99,6 +99,32 @@ function renderSuggestions() {
   $('suggestion-note').hidden = session?.suggestionStatus !== 'skipped';
   $('suggestion-note').textContent = 'You chose to continue without shortcuts. Ask your own question below.';
 }
+// The main conversation, or the focused session on one confirmed problem.
+const currentThread = () => activeProblem ? session?.problemThreads?.[activeProblem] || [] : session?.messages || [];
+const threadLimit = () => activeProblem ? 6 : 8;
+function renderProblems() {
+  const problems = session?.profile?.problems || [];
+  if (activeProblem && !problems.some(p => p.id === activeProblem)) activeProblem = '';
+  const focus = problems.find(p => p.id === activeProblem);
+  $('problem-cards').hidden = !problems.length || Boolean(focus);
+  $('problem-focus').hidden = !focus;
+  $('problem-focus-title').textContent = focus?.title || '';
+  $('problem-list').replaceChildren(...problems.map(problem => {
+    const card = document.createElement('div'); card.className = 'problem-card';
+    const title = document.createElement('strong'); title.textContent = problem.title;
+    const detail = document.createElement('p'); detail.className = 'muted'; detail.textContent = problem.detail;
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary';
+    button.textContent = session.problemThreads?.[problem.id]?.length ? 'Continue' : 'Work on this';
+    button.disabled = Boolean(job); button.onclick = () => focusProblem(problem.id);
+    card.append(title, detail, button); return card;
+  }));
+}
+// Switching threads does not re-read an old reply aloud; a new problem session opens itself.
+function focusProblem(id) {
+  stopVoice(); activeProblem = id; render();
+  const next = nextSpeech(); if (next) voice.spoken = next.key;
+  if (id && !currentThread().length) run(signal => talk('open', '', signal));
+}
 function renderInterview() {
   const interview = session?.interview;
   $('answer-form').hidden = interview?.status !== 'waiting';
@@ -179,10 +205,10 @@ function nextSpeech() {
     const last = [...session.intake].reverse().find(message => message.role === 'assistant');
     return key && { key, text: last?.content || '', listen: key !== 'closing' };
   }
-  const last = session?.messages?.at(-1);
+  const list = currentThread(), last = list.at(-1);
   if (place?.panel === 'twin' && last?.role === 'assistant') {
-    return { key: `twin:${session.profileVersion}:${session.messages.length}`, text: last.content,
-      listen: session.messages.filter(message => message.role === 'user').length < 8 };
+    return { key: `twin:${session.profileVersion}:${activeProblem}:${list.length}`, text: last.content,
+      listen: list.filter(message => message.role === 'user').length < threadLimit() };
   }
   return null;
 }
@@ -332,12 +358,13 @@ function render() {
   stages.forEach(id => { $(id).hidden = id !== stage; });
   $('reset').hidden = !session;
   renderSuggestions();
+  renderProblems();
   renderInterview();
   renderProfileProcess();
   if (!session) return;
   if (stage === 'review') renderProfileEditor();
   thread('intake-thread', session.intake, 'Your interviewer');
-  thread('twin-thread', session.messages, 'Possible future self');
+  thread('twin-thread', currentThread(), 'Possible future self');
   if (pending) bubble($('twin-thread'), { role: 'assistant', content: pending }, 'Possible future self');
   $('twin-title').textContent = `${session.name}, a little further ahead.`;
   $('facts').replaceChildren(...(session.profile?.entries || []).map(fact => {
@@ -347,8 +374,10 @@ function render() {
   $('limited-profile').textContent = 'This twin has limited personal context. Missing information should remain unknown; the future workday is a possibility, not a prediction.';
   $('twin-unknown').textContent = session.profile?.unknownTopics.length
     ? `Not established: ${session.profile.unknownTopics.map(item => item.label).join(', ')}.` : '';
-  $('open-scene').hidden = session.messages.length > 0;
-  $('twin-controls').hidden = session.messages.length === 0;
+  $('open-scene').hidden = Boolean(activeProblem) || session.messages.length > 0;
+  $('twin-controls').hidden = currentThread().length === 0;
+  for (const id of ['suggestions-intro', 'suggestions']) $(id).hidden = Boolean(activeProblem);
+  if (activeProblem) $('suggestion-note').hidden = true;
   const m = session.metrics;
   $('metrics').textContent = m
     ? `Last request — first text: ${m.firstTokenMs ?? '—'} ms · Total: ${m.totalMs} ms · Input: ${m.inputTokens ?? '—'} tokens · Output: ${m.outputTokens ?? '—'} tokens`
@@ -479,7 +508,7 @@ function renderProfileEditor(force = false) {
     : draft?.note || 'These statements retain their sources and context. Check the interpretation, not just whether the quoted words are present.';
   $('cancel-edit').hidden = session.stage === 'review'; updateProfileCount();
 }
-function editProfile() { localStage = 'review'; renderProfileEditor(true); render(); busy(); }
+function editProfile() { activeProblem = ''; localStage = 'review'; renderProfileEditor(true); render(); busy(); }
 async function profileRequest(path, data, signal) {
   setLoading('Preparing your profile…', 'Keeping interview evidence separate from sample interpretations and unknown details.');
   try { session = await api(path, data, signal); }
@@ -550,7 +579,7 @@ async function talk(action, text, signal, suggestionId = '') {
   const response = await fetch('/api/twin', {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ action, text, suggestionId, voice: voice.available && voice.on })
+    body: JSON.stringify({ action, text, suggestionId, problemId: activeProblem, voice: voice.available && voice.on })
   });
   if (!response.ok) throw new Error((await response.json()).error || 'Generation failed.');
   let complete = false;
@@ -680,6 +709,7 @@ async function submitClarification(kind, signal) {
 $('clarification-form').onsubmit = event => { event.preventDefault(); run(signal => submitClarification('answer', signal)); };
 $('skip-clarification').onclick = () => run(signal => submitClarification('skip', signal));
 $('edit-profile').onclick = () => editProfile();
+$('leave-problem').onclick = () => focusProblem('');
 $('cancel-edit').onclick = () => { localStage = ''; render(); };
 $('add-problem').onclick = () => { if (problemRows().length < profileLimits.problems) addProblem(); };
 $('add-claim').onclick = () => { if ($('claims').querySelectorAll('.claim').length < profileLimits.entries) addProfileEntry(); };
@@ -721,7 +751,8 @@ $('reset').onclick = async () => {
 $('export').onclick = () => {
   if (!confirm('These notes contain your confirmed profile, its evidence quotations and conversation. Save them on this computer?')) return;
   const notes = { exportedAt: new Date().toISOString(), label: 'AI-generated simulation, not a prediction',
-    profile: session.profile, facts: session.facts, conversation: session.messages, reflection: session.reflection, lastResponseMetrics: session.metrics };
+    profile: session.profile, facts: session.facts, conversation: session.messages, problemSessions: session.problemThreads,
+    reflection: session.reflection, lastResponseMetrics: session.metrics };
   const url = URL.createObjectURL(new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = `session-notes-${Date.now()}.json`;
   link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
