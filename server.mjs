@@ -105,6 +105,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
       requireThat(s.interview === pending, 'The interview changed while preparing this response.', 409);
       s.interview = result.state;
       s.metrics = result.metrics;
+      // Rule text only: frequent discards mean the problem prompt needs tuning.
+      if (result.state.problemDiscards?.length) console.warn(`Problem updates discarded: ${result.state.problemDiscards.join(' | ')}`);
       syncInterview(s);
       json(res, 200, publicSession(s));
     } catch (error) {

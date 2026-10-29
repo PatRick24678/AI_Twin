@@ -406,3 +406,21 @@ test('model adapter passes stable interview schema through to Claude without sec
   assert.equal(usage.cacheReadTokens, 10);
   assert.equal(usage.cacheWriteTokens, 30);
 });
+
+test('the interviewer sees tracked and dropped problems, and is told never to invent them', () => {
+  let state = recordInterviewInput(opening(), { text: 'Approvals take weeks and status emails eat my Fridays.' });
+  const add = title => ({ action: 'add', problemId: '', topic: 'friction', title, detail: `${title} detail.`,
+    sourceMessageId: state.pendingInput, quote: 'Approvals take weeks' });
+  state = applyInterviewTurn(state, state.requestId, { ...question('retain', 'What would you keep?'),
+    problems: [add('Chasing approvals'), add('Status emails')] });
+  state.problems[1].status = 'dropped';
+  const data = JSON.parse(interviewMessages(state)[1].content);
+  assert.deepEqual(data.trackedProblems.map(p => p.title), ['Chasing approvals']);
+  assert.deepEqual(data.droppedProblemTitles, ['Status emails']);
+  assert.equal(data.limits.problems, 5);
+  const instructions = interviewMessages(state)[0].content;
+  assert.match(instructions, /never manufacture one to fill the list/);
+  assert.match(instructions, /never presume they want it automated/);
+  assert.match(instructions, /Never ask extra questions just to find problems/);
+  assert.deepEqual(INTERVIEW_TURN_SCHEMA.required.includes('problems'), true);
+});

@@ -411,3 +411,62 @@ test('two vague answers close the topic; the rejection explains why and lists op
   assert.equal(state.topics.role.status, 'unclear');
   assert.equal(state.status, 'waiting');
 });
+
+// Live problem tracking. Fabricated updates test the rules, not the model's judgement.
+function problem(state, action, title, extra = {}) {
+  const input = state.messages.find(m => m.id === state.pendingInput);
+  return { action, problemId: '', topic: 'friction', title, detail: title ? `${title}, every week.` : '',
+    sourceMessageId: input.id, quote: input.text, ...extra };
+}
+function withProblems(state, ...updates) {
+  const value = output(unexploredAgenda(state)[0], `Fictional question ${state.turns}?`);
+  value.problems = updates;
+  return apply(state, value);
+}
+const titles = state => workingProfile(state).problems.map(p => p.title);
+
+test('problems are tracked live: add, update, drop, and never more than five', () => {
+  let state = answer(opening(), 'Approvals take weeks and I rewrite the same status emails every Friday.');
+  state = withProblems(state, problem(state, 'add', 'Chasing slow approvals'), problem(state, 'add', 'Rewriting status emails'));
+  assert.deepEqual(titles(state), ['Chasing slow approvals', 'Rewriting status emails']);
+  const [approvals, emails] = workingProfile(state).problems;
+  state = answer(state, 'Actually the status emails are fine, I like writing them. Approvals are the real pain.');
+  state = withProblems(state, problem(state, 'drop', '', { problemId: emails.id }),
+    problem(state, 'update', 'Chasing late approvals', { problemId: approvals.id }));
+  assert.deepEqual(titles(state), ['Chasing late approvals']);
+  assert.equal(workingProfile(state).problems[0].evidence.length, 2);
+  state = answer(state, 'Meeting notes, monthly reports, planning and invoices all pile up too.');
+  state = withProblems(state, problem(state, 'add', 'Rewriting status emails'), problem(state, 'add', 'Meeting notes'));
+  assert.match(state.problemDiscards[0], /already tracked or was dropped/);
+  assert.deepEqual(titles(state), ['Chasing late approvals', 'Meeting notes']);
+  state = answer(state, 'Monthly reports and planning take most of Monday.');
+  state = withProblems(state, problem(state, 'add', 'Monthly reports'), problem(state, 'add', 'Weekly planning'));
+  state = answer(state, 'Invoices and expenses are the worst part.');
+  state = withProblems(state, problem(state, 'add', 'Invoice backlog'), problem(state, 'add', 'Expense claims'));
+  assert.equal(titles(state).length, INTERVIEW_LIMITS.problems);
+  assert.match(state.problemDiscards[0], /already tracked: update or drop one/);
+  assert.equal(state.status, 'waiting');
+});
+
+test('bad problem updates never fail the turn; skips, acknowledgements and declined topics add none', () => {
+  let state = answer(opening(), 'Invoices pile up every month.');
+  state = withProblems(state, problem(state, 'add', 'Invoice backlog', { quote: 'not in the answer' }), { action: 'add' }, null);
+  assert.equal(state.status, 'waiting');
+  assert.deepEqual(titles(state), []);
+  assert.equal(state.problemDiscards.length, 2); // At most two updates per turn are read.
+  state = recordInterviewInput(state, { kind: 'skip' });
+  state = withProblems(state, problem(state, 'add', 'Something from a skip'));
+  assert.deepEqual([titles(state), state.problemDiscards], [[], []]);
+  state = answer(state, 'okay');
+  state = withProblems(state, problem(state, 'add', 'Okay problem'));
+  assert.match(state.problemDiscards[0], /acknowledgement/);
+  state = answer(state, 'Invoices pile up every month.');
+  state = withProblems(state, problem(state, 'add', 'Invoice backlog'));
+  assert.deepEqual(titles(state), ['Invoice backlog']);
+  state = answer(state, "I'd rather not talk about difficulties at work.");
+  const value = output(unexploredAgenda(state)[0], 'Something else entirely?');
+  value.boundaries = [{ topic: 'friction', reason: 'declined', sourceMessageId: state.pendingInput, quote: 'rather not talk about difficulties' }];
+  state = apply(state, value);
+  assert.deepEqual(titles(state), []);
+  assert.equal(state.problems[0].status, 'dropped');
+});

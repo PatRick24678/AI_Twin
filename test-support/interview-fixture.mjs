@@ -16,8 +16,12 @@ export function fixtureInterviewTurn(messages) {
       ? { topic: 'none', text: '', gap: '', move: 'new_area', last: false }
       : { topic: topics[n % topics.length], text: `Fictional test question ${n + 1}?`,
         gap: n >= topics.length ? 'A further fictional detail.' : '', move: 'new_area', last: n >= 4 },
-    observations: [], boundaries: [], retractions: [], stopQuote: ''
+    observations: [], boundaries: [], retractions: [], problems: [], stopQuote: ''
   };
+  if (input?.kind === 'answer' && data.activeQuestion.topic === 'friction') {
+    value.problems.push({ action: 'add', problemId: '', topic: 'friction', title: input.text.slice(0, 80),
+      detail: input.text.slice(0, 240), sourceMessageId: input.id, quote: input.text });
+  }
   if (input?.kind === 'answer') {
     for (const topic of n === 1 ? ['role', 'workflow'] : [data.activeQuestion.topic]) {
       value.observations.push({

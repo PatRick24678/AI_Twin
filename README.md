@@ -102,6 +102,24 @@ The developer usage panel accumulates reported interview tokens (including compl
 outputs). Failed/aborted requests with unavailable usage are marked incomplete. These are not invoices.
 No prompt caching is enabled by this commit; cache counters are recorded if returned by the API.
 
+### Top problems: tracked live during the interview
+Next to its notes, the interviewer keeps up to 5 "problems AI could help with":
+- They must be recurring, concrete burdens, described in the person's own words and each backed by an exact quote.
+- Each turn may add, update or drop at most 2. Most turns change nothing.
+- When the list is full, the interviewer has to update or drop one, so the 5 kept are the strongest.
+
+Safeguards:
+- A dropped problem's title cannot come back.
+- Declining a topic drops that topic's problems.
+- Skips and plain acknowledgements ("okay") cannot create problems.
+
+These updates are optional extras. An invalid update is discarded and the server terminal prints
+`Problem updates discarded: …` (rule text only). It never fails or repairs the interview turn.
+
+The interview itself is unchanged: about 6 questions, and the list is never shown during the interview.
+The only nudge: when wrapping up with fewer than two problems, the interviewer prefers friction or
+desired change for its next new area.
+
 ## Structured profile — increment 3
 
 This increment replaces the six-flat-statement handoff. Active interview observations are copied
