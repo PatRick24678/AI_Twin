@@ -1,4 +1,5 @@
 import { createSilenceDetector } from '/voice-activity.js';
+import { LIVE, toPcm16, sessionUpdate, appendAudio, endAudio, liveStart, reduceLive } from '/live-transcript.js';
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '', activeProblem = '';
 let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180, problems: 5, problemTitle: 80, problemDetail: 240 };
@@ -145,7 +146,7 @@ function renderInterview() {
 }
 
 // Optional voice mode: hear the interviewer and the future self, answer by speaking. All text stays visible and editable.
-const voice = { available: false, maxSeconds: 60, on: false, choice: '', recorder: null, stream: null, chunks: [], cancelled: false, timer: null, spoken: '',
+const voice = { available: false, liveAvailable: false, liveRun: null, audio: null, maxSeconds: 60, on: false, choice: '', recorder: null, stream: null, chunks: [], cancelled: false, timer: null, spoken: '',
   autoSend: true, monitor: null, autoTurn: false, heard: false, noSpeech: false, countdown: null };
 const canMonitor = () => 'AudioContext' in window;
 const RECORDING_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
@@ -234,21 +235,25 @@ async function startRecording() {
   }
   const mimeType = RECORDING_TYPES.find(type => MediaRecorder.isTypeSupported(type));
   voice.chunks = []; voice.cancelled = false;
+  // Always recorded locally too: if live transcription fails, this recording is transcribed the usual way.
   voice.recorder = new MediaRecorder(voice.stream, mimeType ? { mimeType } : {});
   voice.recorder.ondataavailable = event => { if (event.data.size) voice.chunks.push(event.data); };
   voice.recorder.onstop = finishRecording;
   voice.recorder.start();
   voice.timer = setTimeout(() => stopRecording(), voice.maxSeconds * 1000);
   voice.heard = false; voice.noSpeech = false;
-  voice.autoTurn = voice.autoSend && canMonitor();
+  // One AudioContext serves the pause detector and the live capture.
+  if (canMonitor()) { const context = new AudioContext(); voice.audio = { context, source: context.createMediaStreamSource(voice.stream) }; }
+  voice.autoTurn = voice.autoSend && Boolean(voice.audio);
   if (voice.autoTurn) startMonitor();
+  if (voice.liveAvailable && voice.audio) startLive();
   renderVoice();
 }
 // Hands-free: measure the microphone level and end the turn after a pause (see voice-activity.js).
 function startMonitor() {
-  const context = new AudioContext(), analyser = context.createAnalyser(), detect = createSilenceDetector();
+  const analyser = voice.audio.context.createAnalyser(), detect = createSilenceDetector();
   analyser.fftSize = 1024;
-  context.createMediaStreamSource(voice.stream).connect(analyser);
+  voice.audio.source.connect(analyser);
   const data = new Uint8Array(analyser.fftSize);
   let last = -Infinity;
   const tick = now => {
@@ -266,11 +271,101 @@ function startMonitor() {
     }
     voice.monitor.frame = requestAnimationFrame(tick);
   };
-  voice.monitor = { context, frame: requestAnimationFrame(tick) };
+  voice.monitor = { frame: requestAnimationFrame(tick) };
 }
 function stopMonitor() {
   if (!voice.monitor) return;
-  cancelAnimationFrame(voice.monitor.frame); voice.monitor.context.close().catch(() => {}); voice.monitor = null;
+  cancelAnimationFrame(voice.monitor.frame); voice.monitor = null;
+}
+function stopAudio() {
+  voice.audio?.context.close().catch(() => {}); voice.audio = null;
+}
+// Live transcription: words appear in the box while the participant speaks (Mistral realtime, see live-transcript.js).
+async function startLive() {
+  const place = voicePlace(), box = $(place.box), audio = voice.audio;
+  const live = voice.liveRun = { socket: null, node: null, state: liveStart(), queue: [], frames: [], samples: 0,
+    prefix: box.value.trim(), box: place.box, failed: false, ending: false, settle: null };
+  box.readOnly = true;
+  try {
+    // Capture first, so the opening words are queued while the connection is still being set up.
+    await audio.context.audioWorklet.addModule('/pcm-worklet.js');
+    if (live.failed || live.ending) return failLive(live); // Stopped before capture began: use the recording.
+    const node = live.node = new AudioWorkletNode(audio.context, 'pcm-capture'), mute = audio.context.createGain();
+    mute.gain.value = 0; // Keeps the node running without playing the microphone back.
+    audio.source.connect(node); node.connect(mute); mute.connect(audio.context.destination);
+    node.port.onmessage = ({ data }) => collectLive(live, data, audio.context.sampleRate);
+    const response = await fetch('/api/transcribe/live', { method: 'POST', body: '{}',
+      headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1', Authorization: `Bearer ${token}` } });
+    const started = await response.json();
+    if (!response.ok) throw new Error(started.error);
+    if (live.failed) return;
+    const socket = live.socket = new WebSocket(started.url, ['realtime', started.token]);
+    socket.onopen = () => {
+      socket.send(JSON.stringify(sessionUpdate()));
+      for (const message of live.queue) socket.send(message);
+      live.queue = [];
+    };
+    socket.onmessage = event => {
+      let data;
+      try { data = JSON.parse(event.data); } catch { return; }
+      live.state = reduceLive(live.state, data);
+      if (live.state.error) return failLive(live);
+      if (live.state.done) return live.settle?.();
+      showLive(live);
+    };
+    socket.onerror = socket.onclose = () => { if (!live.state.done) failLive(live); };
+  } catch { failLive(live); }
+}
+function collectLive(live, frame, rate) {
+  live.frames.push(frame); live.samples += frame.length;
+  if (live.samples >= rate * LIVE.chunkMs / 1000) flushLive(live, rate);
+}
+function flushLive(live, rate) {
+  if (!live.samples) return;
+  const samples = new Float32Array(live.samples);
+  let at = 0;
+  for (const frame of live.frames) { samples.set(frame, at); at += frame.length; }
+  live.frames = []; live.samples = 0;
+  sendLive(live, JSON.stringify(appendAudio(toPcm16(samples, rate))));
+}
+function sendLive(live, message) {
+  if (live.failed) return;
+  if (live.socket?.readyState === WebSocket.OPEN) live.socket.send(message); else live.queue.push(message);
+}
+function showLive(live) {
+  const box = $(live.box);
+  box.value = [live.prefix, live.state.text.trim()].filter(Boolean).join(' ').slice(0, box.maxLength);
+}
+// A failed live connection is silent: the local recording is transcribed afterwards instead.
+function failLive(live) {
+  if (live.failed || live.state.done) return;
+  live.failed = true; live.queue = [];
+  try { live.socket?.close(); } catch { /* Already closed. */ }
+  live.settle?.();
+}
+function releaseLive(live) {
+  if (live.node) { live.node.port.onmessage = null; live.node.disconnect(); }
+}
+// After the last audio: the full transcript, or null when live transcription did not complete in time.
+function finishLive(live) {
+  live.ending = true;
+  if (voice.audio) flushLive(live, voice.audio.context.sampleRate);
+  releaseLive(live);
+  sendLive(live, JSON.stringify(endAudio()));
+  return new Promise(resolve => {
+    const settle = () => {
+      clearTimeout(timer); live.settle = null;
+      try { live.socket?.close(); } catch { /* Closed. */ }
+      resolve(live.failed || !live.state.done ? null : live.state.text);
+    };
+    const timer = setTimeout(() => { failLive(live); settle(); }, LIVE.finishMs);
+    live.settle = settle;
+    if (live.failed || live.state.done) settle();
+  });
+}
+function cancelLive(live) {
+  failLive(live); releaseLive(live);
+  const box = $(live.box); box.value = live.prefix; box.readOnly = false;
 }
 function stopRecording(cancel = false) {
   stopMonitor();
@@ -294,24 +389,40 @@ function cancelCountdown(message = '') {
 }
 async function finishRecording() {
   const type = (voice.recorder.mimeType || 'audio/webm').split(';')[0];
-  const recording = new Blob(voice.chunks, { type }), cancelled = voice.cancelled, auto = voice.autoTurn;
+  const recording = new Blob(voice.chunks, { type }), cancelled = voice.cancelled, auto = voice.autoTurn, live = voice.liveRun;
   voice.chunks = []; voice.stream?.getTracks().forEach(track => track.stop());
-  voice.stream = null; voice.recorder = null; voice.autoTurn = false; $('voice-state').textContent = ''; renderVoice();
+  voice.stream = null; voice.recorder = null; voice.autoTurn = false; voice.liveRun = null; $('voice-state').textContent = ''; renderVoice();
   if (voice.noSpeech) { voice.noSpeech = false; $('voice-state').textContent = 'I didn’t catch anything. Press "Speak instead of typing" to try again.'; }
   const place = voicePlace();
-  if (cancelled || !recording.size || !place) return;
-  let heardText = false;
-  await run(async signal => {
-    setLoading('Turning your words into text…', 'The recording is not stored by this app.');
-    const response = await fetch('/api/transcribe', { method: 'POST', signal, body: recording,
-      headers: { 'Content-Type': type, 'X-Future-Self': '1', Authorization: `Bearer ${token}` } });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Transcription failed. Type instead.');
-    const box = $(place.box);
-    box.value = [box.value.trim(), result.text].filter(Boolean).join(' ').slice(0, box.maxLength);
-    heardText = Boolean(result.text);
+  if (cancelled || !recording.size || !place) {
+    if (live) cancelLive(live);
+    return stopAudio();
+  }
+  let heardText = false, finalText = null;
+  if (live) {
+    $('voice-state').textContent = 'Finishing the transcript…';
+    finalText = await finishLive(live);
+    // The full transcript replaces the live words; if live failed, the recording is transcribed below.
+    const box = $(live.box); box.readOnly = false;
+    box.value = [live.prefix, finalText || ''].filter(Boolean).join(' ').slice(0, box.maxLength);
+  }
+  stopAudio();
+  if (finalText !== null) {
+    heardText = Boolean(finalText);
     $('voice-state').textContent = heardText ? 'Check or edit the text, then press Send.' : 'No speech was recognised. Try again or type instead.';
-  });
+  } else {
+    await run(async signal => {
+      setLoading('Turning your words into text…', 'The recording is not stored by this app.');
+      const response = await fetch('/api/transcribe', { method: 'POST', signal, body: recording,
+        headers: { 'Content-Type': type, 'X-Future-Self': '1', Authorization: `Bearer ${token}` } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Transcription failed. Type instead.');
+      const box = $(place.box);
+      box.value = [box.value.trim(), result.text].filter(Boolean).join(' ').slice(0, box.maxLength);
+      heardText = Boolean(result.text);
+      $('voice-state').textContent = heardText ? 'Check or edit the text, then press Send.' : 'No speech was recognised. Try again or type instead.';
+    });
+  }
   // Hands-free: the conversation sends at once; the interview waits briefly for corrections.
   if (auto && heardText && voice.on && !job && voicePlace()?.panel === place.panel) {
     if (place.panel === 'twin') return $('message-form').requestSubmit();
@@ -330,7 +441,7 @@ function renderVoice() {
     if (controls.parentElement !== form) form.insertBefore(controls, form.querySelector('button:not([type=button])'));
   }
   const ready = place?.panel === 'intake' ? session?.interview?.status === 'waiting'
-    : place?.panel === 'twin' && (session?.messages?.length || 0) > 0;
+    : place?.panel === 'twin' && currentThread().length > 0;
   $('voice-toggle').setAttribute('aria-pressed', String(voice.on));
   $('voice-toggle-label').textContent = voice.on ? 'Voice on' : 'Voice off';
   $('voice-choice-label').hidden = !(on && canSpeak() && voiceOptions().length);
@@ -348,7 +459,8 @@ function renderVoice() {
   const chosen = englishVoice(), hands = voice.autoSend && canMonitor();
   $('voice-note').hidden = !on;
   $('voice-note').textContent = `Read aloud by ${chosen ? `“${chosen.name}”${chosen.localService ? ' on this device' : ', an online voice that sends the text to your browser’s speech service'}` : 'your browser’s voice'}. ` +
-    'Your recording is sent to Mistral (EU) only to turn it into text; this app does not store it, and Mistral may keep it for up to 30 days unless zero retention is enabled. ' +
+    (voice.liveAvailable ? 'Your words are transcribed live by Mistral (EU) while you speak' : 'Your recording is sent to Mistral (EU) only to turn it into text') +
+    '; this app does not store the audio, and Mistral may keep it for up to 30 days unless zero retention is enabled. ' +
     (hands ? 'A pause of about 2 seconds ends your turn; interview answers wait 3 seconds so you can correct them.'
       : 'Nothing is sent until you press Send.');
 }
@@ -763,6 +875,8 @@ async function initialize() {
     profileTopics = info.profileTopics; profileLimits = info.profileLimits;
     // Voice needs the server's speech provider plus browser recording support.
     voice.available = Boolean(info.voice?.available && 'MediaRecorder' in window && navigator.mediaDevices?.getUserMedia);
+    // Live words need the server's realtime model plus AudioWorklet and WebSocket support; otherwise record, then transcribe.
+    voice.liveAvailable = Boolean(info.voice?.live && 'AudioWorkletNode' in window && 'WebSocket' in window);
     voice.maxSeconds = info.voice?.maxSeconds || voice.maxSeconds;
     try {
       voice.on = voice.available && sessionStorage.getItem('voiceMode') === 'on';

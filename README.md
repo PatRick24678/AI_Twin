@@ -60,6 +60,28 @@ To enable it, add `MISTRAL_API_KEY=...` to the same external `secrets.env` (or t
 Without that key the toggle stays hidden and the app is text-only. `MISTRAL_STT_MODEL` in `.env` can name
 another Voxtral model.
 
+### Live transcription: words appear while you speak
+Live transcription is on by default when voice is configured. It uses Mistral's realtime model,
+`voxtral-mini-transcribe-realtime-2602`, which `MISTRAL_REALTIME_MODEL` can override.
+
+**How it connects**
+1. For each recording, `POST /api/transcribe/live` mints a short-lived token. The server calls `POST /v1/client/sessions`, and the token is scoped to one model and lasts about 15 minutes.
+2. The browser opens Mistral's realtime WebSocket with that token. **The API key never leaves the server.**
+3. An AudioWorklet (`public/pcm-worklet.js`) captures the microphone. `public/live-transcript.js` converts it to 16 kHz PCM and sends it in roughly 100 ms chunks.
+4. Recognised words appear in the box as you speak; the box is read-only while recording.
+5. When you stop or pause, Mistral's final transcript replaces the live words. Then the usual steps follow: send at once in the twin, or the 3-second countdown in the interview.
+
+**Fallback**
+- The audio is also recorded locally.
+- If the token, connection or final transcript fails, or the browser lacks AudioWorklet support, that recording goes to `/api/transcribe` as before.
+- Audio reaches Mistral twice only in that failure case.
+
+**Settings and limits**
+- `MISTRAL_LIVE=off` restores record-then-transcribe.
+- Live recordings count towards the same 40-per-session limit.
+- The page's CSP allows `wss://api.mistral.ai`, only when live transcription is configured.
+- Realtime is billed per audio minute, roughly twice the batch price. Check the current rate and retention on Mistral's pricing page.
+
 ## Model-led interview — increment 2
 
 The fixed question list is removed. Claude asks the opening and contextual follow-ups while

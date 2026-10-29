@@ -25,6 +25,8 @@ const STATIC = {
   '/': ['index.html', 'text/html'],
   '/app.js': ['app.js', 'text/javascript'],
   '/voice-activity.js': ['voice-activity.js', 'text/javascript'],
+  '/live-transcript.js': ['live-transcript.js', 'text/javascript'],
+  '/pcm-worklet.js': ['pcm-worklet.js', 'text/javascript'],
   '/styles.css': ['styles.css', 'text/css']
 };
 function json(res, status, value) {
@@ -164,7 +166,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Security-Policy',
-      "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+      // Live transcription streams from the browser straight to Mistral; nothing else leaves the page.
+      `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'${speech?.live ? ' wss://api.mistral.ai' : ''}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`);
     try {
       const port = req.socket.localPort;
       const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
@@ -181,7 +184,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
       }
       if (method === 'GET' && path === '/api/info') {
         return json(res, 200, { examples: EXAMPLES, model: model.name, profileTopics: PROFILE_TOPICS, profileLimits: PROFILE_LIMITS,
-          voice: { available: Boolean(speech), maxSeconds: SPEECH_LIMITS.seconds } });
+          voice: { available: Boolean(speech), live: Boolean(speech?.live), maxSeconds: SPEECH_LIMITS.seconds } });
       }
       if (method === 'GET' && path === '/api/health') {
         let result;
@@ -237,6 +240,16 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
       }
       const input = await body(req);
       requireThat(sessions.get(token) === s, 'Session was reset. Start again.', 401);
+      if (path === '/api/transcribe/live') {
+        requireThat(speech?.live, 'Live transcription is not available on this server.', 503);
+        requireThat((s.stage === 'intake' && s.interview.status === 'waiting') || s.stage === 'twin',
+          'Voice input is available while an interview question is waiting or in the conversation.', 409);
+        requireThat(s.transcriptions < SPEECH_LIMITS.perSession,
+          'This session has reached its voice limit. Type your answers instead.', 429);
+        s.transcriptions += 1;
+        // A short-lived token for one recording; the browser shows the words as they are recognised.
+        return json(res, 200, await speech.liveSession());
+      }
       requireThat(!s.controller, 'A response is already being generated.', 409);
       // Voice mode only shapes wording (speakable text); it never changes state or evidence.
       if (['/api/interview/next', '/api/answer'].includes(path)) s.voiceMode = input.voice === true;

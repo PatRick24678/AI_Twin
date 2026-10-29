@@ -94,7 +94,8 @@ test('HTTP transcription returns text for a waiting question and never changes t
   const heard = [];
   const speech = { transcribe: async (bytes, options) => { heard.push({ bytes, type: options.type }); return { text: 'I recruit salespeople.', seconds: 3 }; } };
   const { call } = await app(t, speech);
-  assert.deepEqual((await call('/api/info', { method: 'GET' })).body.voice, { available: true, maxSeconds: SPEECH_LIMITS.seconds });
+  // This fake provider has no live transcription, so the browser records and then transcribes.
+  assert.deepEqual((await call('/api/info', { method: 'GET' })).body.voice, { available: true, live: false, maxSeconds: SPEECH_LIMITS.seconds });
   const made = await call('/api/session', { body: { name: 'Alex', consent: true } });
   const token = made.body.token;
   const early = await call('/api/transcribe', { token, body: audio, type: 'audio/webm' });
@@ -169,4 +170,52 @@ test('HTTP voice flag reaches the interviewer and the twin; transcription works 
   assert.ok(prompts.at(-1).kind === 'twin' && prompts.at(-1).system.includes(TWIN_VOICE_MODE));
   await call('/api/twin', { token, body: { action: 'say', text: 'What would I keep doing myself?' } });
   assert.ok(!prompts.at(-1).system.includes('VOICE MODE'));
+});
+
+test('a live session is minted server-side: model-scoped token out, API key never', async () => {
+  const reply = () => new Response(JSON.stringify({ client_secret: { value: 'rt_test-only.token_123', expires_at: 1900000000 } }), { status: 201 });
+  const { speech, calls } = mock(reply);
+  const result = await speech.liveSession();
+  assert.deepEqual(result, { url: 'wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=voxtral-mini-transcribe-realtime-2602',
+    token: 'rt_test-only.token_123', expiresAt: 1900000000 });
+  assert.ok(!JSON.stringify(result).includes(KEY));
+  const { url, options } = calls[0];
+  assert.equal(url, 'https://api.mistral.ai/v1/client/sessions');
+  assert.equal(options.redirect, 'error');
+  assert.equal(options.headers.Authorization, `Bearer ${KEY}`);
+  assert.deepEqual(JSON.parse(options.body), { purpose: 'realtime', model: 'voxtral-mini-transcribe-realtime-2602' });
+  for (const bad of [{}, { client_secret: { value: KEY } }, { client_secret: { value: 'rt_has space in it' } }, { client_secret: { value: 'rt_a,b' } }]) {
+    await assert.rejects(mock(() => Response.json(bad)).speech.liveSession(), /no live session/);
+  }
+  await assert.rejects(mock(() => new Response(`detail ${KEY}`, { status: 401 })).speech.liveSession(),
+    error => /authentication/.test(error.message) && !error.message.includes(KEY));
+  assert.equal(new MistralSpeech({ apiKey: KEY, live: false }).live, false);
+  assert.equal(new MistralSpeech({ apiKey: KEY, liveName: 'whisper-1' }).live, false); // Recorded transcription still works.
+  await assert.rejects(new MistralSpeech({ apiKey: KEY, live: false }).liveSession(), error => error.status === 503);
+});
+
+test('HTTP live transcription is gated like recordings, shares their limit and opens only Mistral in the CSP', async t => {
+  let minted = 0;
+  const speech = { live: true, transcribe: async () => ({ text: 'ok', seconds: 1 }),
+    liveSession: async () => { minted += 1; return { url: 'wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=m', token: 'rt_test', expiresAt: null }; } };
+  const { call, root } = await app(t, speech);
+  assert.equal((await call('/api/info', { method: 'GET' })).body.voice.live, true);
+  assert.match((await fetch(root + '/')).headers.get('content-security-policy'), /connect-src 'self' wss:\/\/api\.mistral\.ai;/);
+  const made = await call('/api/session', { body: { name: 'Alex', consent: true } }), token = made.body.token;
+  assert.equal((await call('/api/transcribe/live', { token, body: {} })).status, 409); // No question waiting yet.
+  await call('/api/interview/next', { token, body: { requestId: made.body.session.interview.requestId } });
+  assert.equal((await call('/api/transcribe/live', { token, body: {}, header: false })).status, 403);
+  assert.deepEqual((await call('/api/transcribe/live', { token, body: {} })).body.token, 'rt_test');
+  for (let i = 1; i < SPEECH_LIMITS.perSession; i++) await call('/api/transcribe', { token, body: audio, type: 'audio/webm' });
+  assert.equal((await call('/api/transcribe/live', { token, body: {} })).status, 429);
+  assert.equal(minted, 1);
+});
+
+test('without live transcription the CSP allows only this server', async t => {
+  for (const speech of [null, { live: false, transcribe: async () => ({ text: '', seconds: 0 }) }]) {
+    const { call, root } = await app(t, speech);
+    assert.match((await fetch(root + '/')).headers.get('content-security-policy'), /connect-src 'self';/);
+    const made = await call('/api/session', { body: { name: 'Alex', consent: true } });
+    assert.equal((await call('/api/transcribe/live', { token: made.body.token, body: {} })).status, 503);
+  }
 });
