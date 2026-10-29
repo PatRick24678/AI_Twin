@@ -29,14 +29,19 @@ Starting a new interview now requests its opening from Claude. Normal answers/sk
 These are billable model requests, followed later by profile, suggestion and conversation requests.
 A verified metadata request does not guarantee that generation will succeed or fit within the budget.
 
-## Optional voice mode (interview)
+## Optional voice mode (interview and conversation)
 
-A 🎤 toggle at the side of the interview switches voice mode on or off. It is off by default and remembered
-for the browser tab. When it is on, each interviewer question (and the closing line) is read aloud with
-the browser's `speechSynthesis`, preferring an English voice that runs on the device. Recording then starts
+A 🎤 toggle at the side of the interview and the future-self conversation switches voice mode on or off.
+It is off by default and remembered for the browser tab. When it is on, each interviewer question (and the
+closing line) and each finished future-self reply is read aloud with the browser's `speechSynthesis`.
+A voice picker lists the browser's English voices; the default is one that runs on this device, and the
+choice is remembered for the tab. Online voices send the text to the browser's speech service, and the note
+under the toggle says so. In voice mode the interviewer and the twin are asked for speakable wording (no
+lists, markdown or symbols); an explicit request for detail still wins. Spoken messages to the twin count
+like typed ones for the reply-length default. Recording then starts
 (Stop / Cancel, at most 60 seconds). The recording is sent once to `POST /api/transcribe`, which forwards it
 to Mistral's speech-to-text API (`voxtral-mini-latest` by default, EU processing by default). The transcript
-is put in the answer box for the participant to check and edit. Nothing becomes an answer until they press Send.
+is put in the answer or message box for the participant to check and edit. Nothing is sent until they press Send.
 
 Audio is bounded (2 MB, webm/ogg/mp4/wav), held in memory for that one request, never stored or logged, and
 the transcript is not saved in the session. There are at most 40 transcriptions per session. Mistral may keep
@@ -44,7 +49,7 @@ API inputs for up to 30 days for abuse monitoring unless zero data retention has
 
 To enable it, add `MISTRAL_API_KEY=...` to the same external `secrets.env` (or the host environment).
 Without that key the toggle stays hidden and the app is text-only. `MISTRAL_STT_MODEL` in `.env` can name
-another Voxtral model. The twin chat does not use voice yet.
+another Voxtral model.
 
 ## Model-led interview — increment 2
 
@@ -195,7 +200,7 @@ an application-level profile-to-chat journey. Live credentials and real model qu
 checked locally by the developer.
 
 After the interview pacing, agenda and voice changes (26 Oct 2026) the suite passed **137 tests** on Node 24.21.0.
-With the optional voice mode (28 Oct 2026) it passes **144 tests**: `test/speech.test.mjs` uses fake
+With the optional voice mode in the interview and conversation (29 Oct 2026) it passes **147 tests**: `test/speech.test.mjs` uses fake
 fetchers and a fake speech service, so it never contacts Mistral. The browser audio itself is a manual check. The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
 profile request shape, 28 new profile-core/builder tests, 12 new profile HTTP tests, and two adapter
 output-limit checks. The five older suites changed only where the old six-string confirmation setup

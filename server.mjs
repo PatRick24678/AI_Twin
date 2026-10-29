@@ -99,7 +99,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
   async function interviewResponse(s, res, signal) {
     const pending = s.interview;
     try {
-      const result = await advanceInterview(model, pending, s.interviewUsage, signal);
+      const result = await advanceInterview(model, pending, s.interviewUsage, signal, { voice: s.voiceMode });
       signal.throwIfAborted();
       requireThat(s.interview === pending, 'The interview changed while preparing this response.', 409);
       s.interview = result.state;
@@ -217,8 +217,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
       requireThat(method === 'POST', 'Not found.', 404);
       if (path === '/api/transcribe') {
         requireThat(speech, 'Voice input is not configured on this server.', 503);
-        requireThat(s.stage === 'intake' && s.interview.status === 'waiting',
-          'Voice answers are available while an interview question is waiting.', 409);
+        requireThat((s.stage === 'intake' && s.interview.status === 'waiting') || s.stage === 'twin',
+          'Voice input is available while an interview question is waiting or in the conversation.', 409);
         requireThat(!s.speechController, 'A recording is already being transcribed.', 409);
         requireThat(s.transcriptions < SPEECH_LIMITS.perSession,
           'This session has reached its voice limit. Type your answers instead.', 429);
@@ -235,6 +235,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
       const input = await body(req);
       requireThat(sessions.get(token) === s, 'Session was reset. Start again.', 401);
       requireThat(!s.controller, 'A response is already being generated.', 409);
+      // Voice mode only shapes wording (speakable text); it never changes state or evidence.
+      if (['/api/interview/next', '/api/answer'].includes(path)) s.voiceMode = input.voice === true;
       if (path === '/api/interview/next') {
         requireThat(s.stage === 'intake' && s.interview.status === 'thinking',
           'There is no interview response waiting to be generated.', 409);
@@ -367,7 +369,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
             if (!res.write(JSON.stringify(event) + '\n')) await once(res, 'drain', { signal });
           };
           try {
-            const output = await model.chat(twinMessages(s, action, userText, { includeSample: action === 'demo' || selected?.kind === 'draft' }), {
+            const output = await model.chat(twinMessages(s, action, userText, {
+              includeSample: action === 'demo' || selected?.kind === 'draft', voice: input.voice === true }), {
               signal, onToken: value => emit({ type: 'token', text: value })
             });
             signal.throwIfAborted();

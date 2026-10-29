@@ -21,7 +21,7 @@ button.secondary { background: white; color: #244f3e; }
 button:disabled { opacity: .55; cursor: wait; }
 :focus-visible { outline: 3px solid #bf762c; outline-offset: 3px; }
 .actions { display: flex; flex-wrap: wrap; margin: 16px 0; gap: 4px; }
-.thread { display: flex; flex-direction: column; gap: 15px; max-height: 440px; overflow-y: auto; margin: 22px 0; padding: 5px; }
+.thread { clear: both; display: flex; flex-direction: column; gap: 15px; max-height: 440px; overflow-y: auto; margin: 22px 0; padding: 5px; }
 .bubble { max-width: 92%; border-radius: 15px; padding: 14px 18px; background: #eff3ee; align-self: flex-start; }
 .bubble.user { background: #edf0f7; align-self: flex-end; }
 .bubble p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -101,13 +101,17 @@ button:disabled { opacity: .55; cursor: wait; }
 }
 
 /* Optional voice mode: a side toggle; text stays visible and editable. */
-#intake { position: relative; }
-.voice-toggle { position: absolute; top: 22px; right: 22px; margin: 0; }
-.voice-toggle[aria-pressed="true"] { background: #244f3e; color: #fff; }
+.voice-settings { float: right; max-width: 300px; margin: 0 0 12px 20px; }
+.voice-bar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; }
+.voice-bar button { margin: 0; }
+#voice-toggle[aria-pressed="true"] { background: #244f3e; color: #fff; }
+.voice-choice { margin: 0; font-size: .85rem; width: 100%; }
+.voice-choice select { display: block; width: 100%; margin-top: 4px; padding: 8px; font: inherit; border: 1px solid #a5b1ab; border-radius: 8px; background: #fff; color: inherit; }
+.voice-settings #voice-note { font-size: .8rem; line-height: 1.45; }
 .voice-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 8px; }
 .voice-controls.recording #voice-state::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 50%; background: #a93929; }
 @media (prefers-reduced-motion: no-preference) { .voice-controls.recording #voice-state::before { animation: pulse 1.2s ease-in-out infinite; } @keyframes pulse { 50% { opacity: .3; } } }
-@media (max-width: 600px) { .voice-toggle { position: static; margin-bottom: 8px; } }
+@media (max-width: 600px) { .voice-settings { float: none; max-width: none; margin: 0 0 12px; } .voice-bar { justify-content: flex-start; } }
 
 /* Structured, source-linked profile check. Original sample/draft comparison is a later feature. */
 .profile-group { margin: 18px 0; border: 1px solid #d8e0d8; border-radius: 12px; padding: 16px; }

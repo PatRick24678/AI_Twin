@@ -117,20 +117,45 @@ function renderInterview() {
   renderVoice(); maybeSpeak();
 }
 
-// Optional voice mode: hear the interviewer, answer by speaking. All text stays visible and editable.
-const voice = { available: false, maxSeconds: 60, on: false, recorder: null, stream: null, chunks: [], cancelled: false, timer: null, spoken: '' };
+// Optional voice mode: hear the interviewer and the future self, answer by speaking. All text stays visible and editable.
+const voice = { available: false, maxSeconds: 60, on: false, choice: '', recorder: null, stream: null, chunks: [], cancelled: false, timer: null, spoken: '' };
 const RECORDING_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
 const canSpeak = () => 'speechSynthesis' in window;
-function storeVoicePreference() { try { sessionStorage.setItem('voiceMode', voice.on ? 'on' : 'off'); } catch { /* Optional convenience. */ } }
-function englishVoice() {
-  const voices = canSpeak() ? speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('en')) : [];
-  return voices.find(v => v.localService) || voices[0] || null;
+function remember(key, value) { try { sessionStorage.setItem(key, value); } catch { /* Optional convenience. */ } }
+function storeVoicePreference() { remember('voiceMode', voice.on ? 'on' : 'off'); }
+// Where voice applies: the interview answer box or the conversation message box.
+function voicePlace() {
+  const stage = localStage || session?.stage;
+  return stage === 'intake' ? { panel: 'intake', form: 'answer-form', box: 'answer' }
+    : stage === 'twin' ? { panel: 'twin', form: 'message-form', box: 'message' } : null;
 }
+function voiceOptions() {
+  const all = canSpeak() ? speechSynthesis.getVoices() : [];
+  const english = all.filter(v => v.lang.toLowerCase().startsWith('en'));
+  return english.length ? english : all;
+}
+// The participant's choice, else an English voice that runs on this device.
+function englishVoice() {
+  const options = voiceOptions();
+  return options.find(v => v.voiceURI === voice.choice) || options.find(v => v.localService) || options[0] || null;
+}
+function renderVoiceChoices() {
+  const options = voiceOptions(), current = englishVoice(), select = $('voice-choice');
+  select.replaceChildren(...options.map(v => {
+    const option = document.createElement('option');
+    option.value = v.voiceURI; option.selected = v === current;
+    option.textContent = `${v.name} (${v.lang}${v.localService ? ', on this device' : ', online'})`;
+    return option;
+  }));
+  renderVoice();
+}
+// Remove written formatting so it is not read out as symbols.
+const speakable = text => text.replace(/^\s*(?:[-•*]|\d+[.)])\s+/gm, '').replace(/[*_#`>|]+/g, '').trim();
 function speak(text) {
   if (!canSpeak() || !text) return Promise.resolve();
   speechSynthesis.cancel();
   return new Promise(resolve => {
-    const utterance = new SpeechSynthesisUtterance(text), chosen = englishVoice();
+    const utterance = new SpeechSynthesisUtterance(speakable(text)), chosen = englishVoice();
     if (chosen) utterance.voice = chosen;
     utterance.lang = chosen?.lang || 'en-GB';
     utterance.onend = utterance.onerror = () => { renderVoice(); resolve(); };
@@ -142,17 +167,31 @@ function stopVoice() {
   if (voice.recorder) stopRecording(true);
   renderVoice();
 }
-// Read each new question (and the closing line) once, then listen for the answer.
+// What to read next: a new interview question or closing line, or a finished reply from the future self.
+function nextSpeech() {
+  const place = voicePlace(), interview = session?.interview;
+  if (place?.panel === 'intake' && interview) {
+    const key = interview.status === 'waiting' ? interview.questionId : interview.status === 'complete' ? 'closing' : '';
+    const last = [...session.intake].reverse().find(message => message.role === 'assistant');
+    return key && { key, text: last?.content || '', listen: key !== 'closing' };
+  }
+  const last = session?.messages?.at(-1);
+  if (place?.panel === 'twin' && last?.role === 'assistant') {
+    return { key: `twin:${session.profileVersion}:${session.messages.length}`, text: last.content,
+      listen: session.messages.filter(message => message.role === 'user').length < 8 };
+  }
+  return null;
+}
+// Read each new item once, then listen for the reply (unless the participant has started typing).
 function maybeSpeak() {
-  const interview = session?.interview;
-  if (!voice.available || !voice.on || job || !interview || session.stage !== 'intake') return;
-  const key = interview.status === 'waiting' ? interview.questionId : interview.status === 'complete' ? 'closing' : '';
-  if (!key || key === voice.spoken) return;
-  voice.spoken = key; $('voice-state').textContent = '';
-  const last = [...session.intake].reverse().find(message => message.role === 'assistant');
-  speak(last?.content || '').then(() => {
-    if (key !== 'closing' && voice.on && voice.spoken === key && session?.interview?.questionId === key &&
-      !job && !$('answer').value.trim()) startRecording();
+  if (!voice.available || !voice.on || job) return;
+  const next = nextSpeech();
+  if (!next || next.key === voice.spoken) return;
+  voice.spoken = next.key; $('voice-state').textContent = '';
+  speak(next.text).then(() => {
+    const place = voicePlace();
+    if (next.listen && voice.on && voice.spoken === next.key && nextSpeech()?.key === next.key &&
+      !job && place && !$(place.box).value.trim()) startRecording();
   });
 }
 async function startRecording() {
@@ -160,7 +199,7 @@ async function startRecording() {
   errorMessage();
   try { voice.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch {
-    errorMessage('Microphone access was blocked or is unavailable. Type your answer, or allow the microphone and press "Speak my answer".');
+    errorMessage('Microphone access was blocked or is unavailable. Type instead, or allow the microphone and press "Speak instead of typing".');
     return;
   }
   const mimeType = RECORDING_TYPES.find(type => MediaRecorder.isTypeSupported(type));
@@ -181,33 +220,46 @@ async function finishRecording() {
   const recording = new Blob(voice.chunks, { type }), cancelled = voice.cancelled;
   voice.chunks = []; voice.stream?.getTracks().forEach(track => track.stop());
   voice.stream = null; voice.recorder = null; $('voice-state').textContent = ''; renderVoice();
-  if (cancelled || !recording.size) return;
+  const place = voicePlace();
+  if (cancelled || !recording.size || !place) return;
   await run(async signal => {
-    setLoading('Turning your answer into text…', 'Check the text before you send it. The recording is not stored by this app.');
+    setLoading('Turning your words into text…', 'Check the text before you send it. The recording is not stored by this app.');
     const response = await fetch('/api/transcribe', { method: 'POST', signal, body: recording,
       headers: { 'Content-Type': type, 'X-Future-Self': '1', Authorization: `Bearer ${token}` } });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Transcription failed. Type your answer instead.');
-    $('answer').value = [$('answer').value.trim(), result.text].filter(Boolean).join(' ');
-    $('voice-state').textContent = result.text ? 'Check or edit the text, then press Send.' : 'No speech was recognised. Try again or type your answer.';
+    if (!response.ok) throw new Error(result.error || 'Transcription failed. Type instead.');
+    const box = $(place.box);
+    box.value = [box.value.trim(), result.text].filter(Boolean).join(' ').slice(0, box.maxLength);
+    $('voice-state').textContent = result.text ? 'Check or edit the text, then press Send.' : 'No speech was recognised. Try again or type instead.';
   });
-  $('answer').focus();
+  $(place.box).focus();
 }
 function renderVoice() {
-  const recording = Boolean(voice.recorder), speaking = canSpeak() && speechSynthesis.speaking;
-  $('voice-toggle').hidden = !voice.available;
+  const place = voicePlace(), recording = Boolean(voice.recorder), speaking = canSpeak() && speechSynthesis.speaking;
+  const settings = $('voice-settings'), controls = $('voice-controls'), on = voice.available && voice.on;
+  settings.hidden = !(voice.available && place);
+  // One set of controls, moved into whichever panel and form is active.
+  if (place) {
+    if (settings.parentElement !== $(place.panel)) $(place.panel).prepend(settings);
+    const form = $(place.form);
+    if (controls.parentElement !== form) form.insertBefore(controls, form.querySelector('button:not([type=button])'));
+  }
+  const ready = place?.panel === 'intake' ? session?.interview?.status === 'waiting'
+    : place?.panel === 'twin' && (session?.messages?.length || 0) > 0;
   $('voice-toggle').setAttribute('aria-pressed', String(voice.on));
   $('voice-toggle-label').textContent = voice.on ? 'Voice on' : 'Voice off';
-  $('voice-controls').hidden = !(voice.available && voice.on && session?.interview?.status === 'waiting');
-  $('voice-controls').classList.toggle('recording', recording);
+  $('voice-choice-label').hidden = !(on && canSpeak() && voiceOptions().length);
+  $('voice-preview').hidden = $('voice-choice-label').hidden;
+  controls.hidden = !(on && ready);
+  controls.classList.toggle('recording', recording);
   $('record').hidden = recording; $('stop-recording').hidden = !recording; $('cancel-recording').hidden = !recording;
   $('stop-speaking').hidden = !speaking;
   if (recording) $('voice-state').textContent = `Listening… press Stop when you are done (up to ${voice.maxSeconds} seconds).`;
   const chosen = englishVoice();
-  $('voice-note').hidden = !(voice.available && voice.on);
-  $('voice-note').textContent = `Voice mode: questions are read aloud by ${chosen ? `“${chosen.name}”${chosen.localService ? ' on this device' : ', an online voice'}` : 'your browser’s voice'}. ` +
+  $('voice-note').hidden = !on;
+  $('voice-note').textContent = `Read aloud by ${chosen ? `“${chosen.name}”${chosen.localService ? ' on this device' : ', an online voice that sends the text to your browser’s speech service'}` : 'your browser’s voice'}. ` +
     'Your recording is sent to Mistral (EU) only to turn it into text; this app does not store it, and Mistral may keep it for up to 30 days unless zero retention is enabled. ' +
-    'Nothing is sent as an answer until you press Send.';
+    'Nothing is sent until you press Send.';
 }
 
 function render() {
@@ -390,6 +442,7 @@ async function talk(action, text, signal, suggestionId = '') {
     'Waiting for the first words from Claude.'
   );
 
+  stopVoice(); // A new message or button replaces anything being read or recorded.
   const selected = action === 'suggestion'
     ? session.suggestions.find(item => item.id === suggestionId) : null;
   if (action === 'suggestion' && !selected) throw new Error('This button is no longer available.');
@@ -401,7 +454,7 @@ async function talk(action, text, signal, suggestionId = '') {
   const response = await fetch('/api/twin', {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ action, text, suggestionId })
+    body: JSON.stringify({ action, text, suggestionId, voice: voice.available && voice.on })
   });
   if (!response.ok) throw new Error((await response.json()).error || 'Generation failed.');
   let complete = false;
@@ -432,7 +485,8 @@ async function interviewRequest(path, data, signal) {
     'Claude is preparing one question and updating the working notes.'
   );
   try {
-    session = await api(path, data, signal);
+    // Voice mode only asks for speakable wording; it is not interview evidence.
+    session = await api(path, { ...data, voice: voice.available && voice.on }, signal);
   } catch (error) {
     // A network failure can hide a successfully accepted answer. Re-read our own
     // session before offering Retry; do not automatically resend or regenerate.
@@ -469,6 +523,11 @@ $('record').onclick = () => { if (canSpeak()) speechSynthesis.cancel(); startRec
 $('stop-recording').onclick = () => stopRecording();
 $('cancel-recording').onclick = () => stopRecording(true);
 $('stop-speaking').onclick = () => { speechSynthesis.cancel(); renderVoice(); };
+$('voice-choice').onchange = () => {
+  voice.choice = $('voice-choice').value; remember('voiceChoice', voice.choice);
+  renderVoice(); speak('This is how I will sound.');
+};
+$('voice-preview').onclick = () => speak('Hello. This is how I will sound when I read the conversation aloud.');
 $('answer-form').onsubmit = event => {
   event.preventDefault();
   stopVoice();
@@ -568,8 +627,12 @@ async function initialize() {
     // Voice needs the server's speech provider plus browser recording support.
     voice.available = Boolean(info.voice?.available && 'MediaRecorder' in window && navigator.mediaDevices?.getUserMedia);
     voice.maxSeconds = info.voice?.maxSeconds || voice.maxSeconds;
-    try { voice.on = voice.available && sessionStorage.getItem('voiceMode') === 'on'; } catch { voice.on = false; }
-    if (canSpeak()) speechSynthesis.onvoiceschanged = renderVoice;
+    try {
+      voice.on = voice.available && sessionStorage.getItem('voiceMode') === 'on';
+      voice.choice = sessionStorage.getItem('voiceChoice') || '';
+    } catch { voice.on = false; }
+    // Browsers load their voice list asynchronously.
+    if (canSpeak()) { speechSynthesis.onvoiceschanged = renderVoiceChoices; renderVoiceChoices(); }
     render();
     const options = [{ id: 'none', label: 'None / not sure', sample: 'Do not infer a preference from these examples.' }, ...info.examples];
     for (const option of options) {

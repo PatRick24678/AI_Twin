@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { MistralSpeech, createSpeech, SPEECH_LIMITS } from '../lib/speech-model.mjs';
 import { createApp } from '../server.mjs';
-import { withInterviewFixture } from '../test-support/interview-fixture.mjs';
+import { withInterviewFixture, fixtureInterviewTurn, completeTestInterview } from '../test-support/interview-fixture.mjs';
+import { profileSubmission } from '../test-support/profile-fixture.mjs';
+import { twinMessages, TWIN_VOICE_MODE } from '../lib/prompts.mjs';
+import { interviewMessages, INTERVIEW_VOICE_MODE } from '../lib/interviewer.mjs';
+import { createInterview } from '../lib/interview-state.mjs';
 
 // Fake key and fetchers only: these tests never contact a speech provider.
 const KEY = 'test-only-speech-key';
@@ -70,9 +74,9 @@ test('a long transcript is capped and a cancelled request does not return text',
   await assert.rejects(pending);
 });
 
-async function app(t, speech) {
+async function app(t, speech, model) {
   const base = { name: 'SPEECH-TEST-NO-REAL-API', health: async () => ({ ok: true }), chat: async () => { throw new Error('unused'); } };
-  const server = createApp(withInterviewFixture(base), speech);
+  const server = createApp(model || withInterviewFixture(base), speech);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const root = `http://127.0.0.1:${server.address().port}`;
@@ -80,9 +84,10 @@ async function app(t, speech) {
     const response = await fetch(root + path, { method,
       headers: { 'Content-Type': type, ...(header ? { 'X-Future-Self': '1' } : {}), Authorization: `Bearer ${token}` },
       ...(body === undefined ? {} : { body: type === 'application/json' ? JSON.stringify(body) : body }) });
-    return { status: response.status, body: await response.json() };
+    const text = await response.text();
+    return { status: response.status, body: (type === 'application/json' && path === '/api/twin') ? text : JSON.parse(text) };
   };
-  return { call };
+  return { call, root };
 }
 
 test('HTTP transcription returns text for a waiting question and never changes the interview', async t => {
@@ -125,4 +130,43 @@ test('without a speech provider the app stays text-only', async t => {
   const made = await call('/api/session', { body: { name: 'Alex', consent: true } });
   const result = await call('/api/transcribe', { token: made.body.token, body: audio, type: 'audio/webm' });
   assert.equal(result.status, 503);
+});
+
+test('voice mode asks both prompts for speakable wording, and only when it is on', () => {
+  const session = { name: 'Alex', messages: [], answers: [], facts: ['Recruits salespeople.'], profileVersion: 1 };
+  assert.ok(twinMessages(session, 'open', '', { voice: true })[0].content.includes(TWIN_VOICE_MODE));
+  assert.ok(!twinMessages(session, 'open')[0].content.includes('VOICE MODE'));
+  assert.ok(interviewMessages(createInterview(), '', { voice: true })[0].content.includes(INTERVIEW_VOICE_MODE));
+  assert.ok(!interviewMessages(createInterview())[0].content.includes('VOICE MODE'));
+});
+
+test('HTTP voice flag reaches the interviewer and the twin; transcription works in the conversation', async t => {
+  const prompts = [];
+  const model = { name: 'SPEECH-TEST-NO-REAL-API', health: async () => ({ ok: true }),
+    async chat(messages, options = {}) {
+      prompts.push({ kind: options.schema?.properties?.question ? 'interview' : 'twin', system: messages[0].content });
+      const text = options.schema?.properties?.question ? JSON.stringify(fixtureInterviewTurn(messages)) : 'Hello from a possible Tuesday.';
+      return { text, metrics: { firstTokenMs: 1, totalMs: 2, inputTokens: 10, outputTokens: 5 } };
+    } };
+  const speech = { transcribe: async () => ({ text: 'What would I keep doing myself?', seconds: 2 }) };
+  const { call, root } = await app(t, speech, model);
+  const a = await call('/api/session', { body: { name: 'Alex', consent: true } });
+  await call('/api/interview/next', { token: a.body.token, body: { requestId: a.body.session.interview.requestId, voice: true } });
+  assert.ok(prompts.at(-1).system.includes(INTERVIEW_VOICE_MODE));
+  const b = await call('/api/session', { body: { name: 'Sam', consent: true } });
+  const token = b.body.token;
+  await completeTestInterview(root, token, ['I recruit salespeople.', 'Replies are slow.', 'Short messages.', 'I keep the interviews.']);
+  assert.ok(prompts.filter(p => p.kind === 'interview').slice(1).every(p => !p.system.includes('VOICE MODE')));
+  const submission = await profileSubmission(root, token, ['I recruit salespeople.']);
+  const profile = await call('/api/profile', { token, body: submission });
+  assert.equal(profile.status, 200);
+  const twin = await call('/api/suggestions', { token, body: { profileVersion: profile.body.profileVersion, mode: 'skip' } });
+  assert.equal(twin.body.stage, 'twin');
+  const heard = await call('/api/transcribe', { token, body: audio, type: 'audio/webm' });
+  assert.deepEqual(heard, { status: 200, body: { text: 'What would I keep doing myself?' } });
+  const wire = await call('/api/twin', { token, body: { action: 'open', voice: true } });
+  assert.match(wire.body, /"type":"done"/);
+  assert.ok(prompts.at(-1).kind === 'twin' && prompts.at(-1).system.includes(TWIN_VOICE_MODE));
+  await call('/api/twin', { token, body: { action: 'say', text: 'What would I keep doing myself?' } });
+  assert.ok(!prompts.at(-1).system.includes('VOICE MODE'));
 });

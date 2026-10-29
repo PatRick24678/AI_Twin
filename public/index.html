@@ -46,9 +46,19 @@
     <p class="muted">English, text-first prototype. No login. Refreshing starts a new browser session.</p>
   </section>
 
+  <!-- Shared voice settings; the app moves this into the interview or conversation panel. -->
+  <div id="voice-settings" class="voice-settings" hidden>
+    <div class="voice-bar">
+      <button id="voice-toggle" type="button" class="secondary" aria-pressed="false"
+        title="Voice mode: hear the conversation and answer by speaking">🎤 <span id="voice-toggle-label">Voice off</span></button>
+      <label id="voice-choice-label" class="voice-choice" hidden>Voice
+        <select id="voice-choice"></select></label>
+      <button id="voice-preview" type="button" class="secondary" hidden>Hear it</button>
+    </div>
+    <p id="voice-note" class="muted" hidden></p>
+  </div>
+
   <section id="intake" class="panel" hidden>
-    <button id="voice-toggle" type="button" class="secondary voice-toggle" aria-pressed="false" hidden
-      title="Voice mode: hear each question and answer by speaking">🎤 <span id="voice-toggle-label">Voice off</span></button>
     <p class="eyebrow">A conversation about your work</p>
     <h2>Let's get to know your workday.</h2>
     <p>I'm helping build your twin, not speaking as it yet. Brief answers are fine.
@@ -59,7 +69,7 @@
         <textarea id="answer" maxlength="3000" required rows="3"></textarea>
       </label>
       <div id="voice-controls" class="voice-controls" hidden>
-        <button id="record" type="button" class="secondary">🎙 Speak my answer</button>
+        <button id="record" type="button" class="secondary">🎙 Speak instead of typing</button>
         <button id="stop-recording" type="button" hidden>■ Stop and transcribe</button>
         <button id="cancel-recording" type="button" class="secondary" hidden>Cancel recording</button>
         <button id="stop-speaking" type="button" class="secondary" hidden>Stop reading</button>
@@ -68,7 +78,6 @@
       <button>Send</button>
       <button id="skip-question" type="button" class="secondary">Skip this question</button>
     </form>
-    <p id="voice-note" class="muted" hidden></p>
     <div id="interview-recovery" hidden>
       <p class="muted">Waiting for the interviewer. If the request failed, retry its response;
         you do not need to submit your answer again.</p>
