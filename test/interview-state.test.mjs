@@ -5,7 +5,7 @@ import {
 } from '../lib/interview-contract.mjs';
 import {
   createInterview, recordInterviewInput, applyInterviewTurn,
-  availableTopics, workingProfile, interviewPace, unexploredAgenda, mustChangeSubject, withoutStockPhrases
+  availableTopics, workingProfile, interviewPace, unexploredAgenda, mustChangeSubject, withoutStockPhrases, withoutQuestion
 } from '../lib/interview-state.mjs';
 
 // These fabricated outputs test the rules, not a real model's understanding.
@@ -469,4 +469,15 @@ test('bad problem updates never fail the turn; skips, acknowledgements and decli
   state = apply(state, value);
   assert.deepEqual(titles(state), []);
   assert.equal(state.problems[0].status, 'dropped');
+});
+
+test('a question repeated inside the acknowledgement is shown only once', () => {
+  // Seen live: the opening greeting ended with the same question as question.text.
+  const value = output('role', 'To start, what do you do in your working life, and what does an ordinary day look like for you?');
+  value.acknowledgement = "Hi, I'm glad you're here. This will take about six questions and a few minutes. " + value.question.text;
+  const state = apply(createInterview(), value);
+  assert.equal(state.messages[0].text, `Hi, I'm glad you're here. This will take about six questions and a few minutes.\n\n${value.question.text}`);
+  assert.equal(withoutQuestion('What a week. So, what does an ordinary day look like for you?', value.question.text), 'What a week.');
+  assert.equal(withoutQuestion('Two weeks is a long wait.', 'Who is usually waiting on you?'), 'Two weeks is a long wait.');
+  assert.equal(withoutQuestion('Fair enough.', 'Fair enough, so what would you keep doing yourself?'), 'Fair enough.');
 });
