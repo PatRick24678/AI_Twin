@@ -1,3 +1,4 @@
+import { createSilenceDetector } from '/voice-activity.js';
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '';
 let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180 };
@@ -118,7 +119,9 @@ function renderInterview() {
 }
 
 // Optional voice mode: hear the interviewer and the future self, answer by speaking. All text stays visible and editable.
-const voice = { available: false, maxSeconds: 60, on: false, choice: '', recorder: null, stream: null, chunks: [], cancelled: false, timer: null, spoken: '' };
+const voice = { available: false, maxSeconds: 60, on: false, choice: '', recorder: null, stream: null, chunks: [], cancelled: false, timer: null, spoken: '',
+  autoSend: true, monitor: null, autoTurn: false, heard: false, noSpeech: false, countdown: null };
+const canMonitor = () => 'AudioContext' in window;
 const RECORDING_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
 const canSpeak = () => 'speechSynthesis' in window;
 function remember(key, value) { try { sessionStorage.setItem(key, value); } catch { /* Optional convenience. */ } }
@@ -165,6 +168,7 @@ function speak(text) {
 function stopVoice() {
   if (canSpeak()) speechSynthesis.cancel();
   if (voice.recorder) stopRecording(true);
+  cancelCountdown();
   renderVoice();
 }
 // What to read next: a new interview question or closing line, or a finished reply from the future self.
@@ -209,29 +213,84 @@ async function startRecording() {
   voice.recorder.onstop = finishRecording;
   voice.recorder.start();
   voice.timer = setTimeout(() => stopRecording(), voice.maxSeconds * 1000);
+  voice.heard = false; voice.noSpeech = false;
+  voice.autoTurn = voice.autoSend && canMonitor();
+  if (voice.autoTurn) startMonitor();
   renderVoice();
 }
+// Hands-free: measure the microphone level and end the turn after a pause (see voice-activity.js).
+function startMonitor() {
+  const context = new AudioContext(), analyser = context.createAnalyser(), detect = createSilenceDetector();
+  analyser.fftSize = 1024;
+  context.createMediaStreamSource(voice.stream).connect(analyser);
+  const data = new Uint8Array(analyser.fftSize);
+  let last = -Infinity;
+  const tick = now => {
+    if (!voice.monitor) return;
+    if (now - last >= 100) {
+      last = now; analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (const value of data) sum += ((value - 128) / 128) ** 2;
+      const state = detect(Math.sqrt(sum / data.length), now);
+      if (state === 'speaking' && !voice.heard) { voice.heard = true; renderVoice(); }
+      if (['done', 'max', 'no_speech'].includes(state)) {
+        voice.noSpeech = state === 'no_speech';
+        return stopRecording(voice.noSpeech); // Nothing said: discard, never send.
+      }
+    }
+    voice.monitor.frame = requestAnimationFrame(tick);
+  };
+  voice.monitor = { context, frame: requestAnimationFrame(tick) };
+}
+function stopMonitor() {
+  if (!voice.monitor) return;
+  cancelAnimationFrame(voice.monitor.frame); voice.monitor.context.close().catch(() => {}); voice.monitor = null;
+}
 function stopRecording(cancel = false) {
+  stopMonitor();
   if (!voice.recorder || voice.recorder.state === 'inactive') return;
   voice.cancelled = cancel; clearTimeout(voice.timer); voice.recorder.stop();
 }
+// Interview answers become profile notes, so they wait briefly where a click can stop them.
+function startCountdown() {
+  let left = 3;
+  const tick = () => {
+    if (left === 0) { voice.countdown = null; renderVoice(); $('answer-form').requestSubmit(); return; }
+    $('voice-state').textContent = `Sending in ${left}… click the text or "Edit first" to correct it.`;
+    left -= 1; voice.countdown = setTimeout(tick, 1000);
+  };
+  voice.countdown = setTimeout(tick, 0); renderVoice();
+}
+function cancelCountdown(message = '') {
+  if (!voice.countdown) return;
+  clearTimeout(voice.countdown); voice.countdown = null;
+  $('voice-state').textContent = message; renderVoice();
+}
 async function finishRecording() {
   const type = (voice.recorder.mimeType || 'audio/webm').split(';')[0];
-  const recording = new Blob(voice.chunks, { type }), cancelled = voice.cancelled;
+  const recording = new Blob(voice.chunks, { type }), cancelled = voice.cancelled, auto = voice.autoTurn;
   voice.chunks = []; voice.stream?.getTracks().forEach(track => track.stop());
-  voice.stream = null; voice.recorder = null; $('voice-state').textContent = ''; renderVoice();
+  voice.stream = null; voice.recorder = null; voice.autoTurn = false; $('voice-state').textContent = ''; renderVoice();
+  if (voice.noSpeech) { voice.noSpeech = false; $('voice-state').textContent = 'I didn’t catch anything. Press "Speak instead of typing" to try again.'; }
   const place = voicePlace();
   if (cancelled || !recording.size || !place) return;
+  let heardText = false;
   await run(async signal => {
-    setLoading('Turning your words into text…', 'Check the text before you send it. The recording is not stored by this app.');
+    setLoading('Turning your words into text…', 'The recording is not stored by this app.');
     const response = await fetch('/api/transcribe', { method: 'POST', signal, body: recording,
       headers: { 'Content-Type': type, 'X-Future-Self': '1', Authorization: `Bearer ${token}` } });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Transcription failed. Type instead.');
     const box = $(place.box);
     box.value = [box.value.trim(), result.text].filter(Boolean).join(' ').slice(0, box.maxLength);
-    $('voice-state').textContent = result.text ? 'Check or edit the text, then press Send.' : 'No speech was recognised. Try again or type instead.';
+    heardText = Boolean(result.text);
+    $('voice-state').textContent = heardText ? 'Check or edit the text, then press Send.' : 'No speech was recognised. Try again or type instead.';
   });
+  // Hands-free: the conversation sends at once; the interview waits briefly for corrections.
+  if (auto && heardText && voice.on && !job && voicePlace()?.panel === place.panel) {
+    if (place.panel === 'twin') return $('message-form').requestSubmit();
+    return startCountdown();
+  }
   $(place.box).focus();
 }
 function renderVoice() {
@@ -254,12 +313,18 @@ function renderVoice() {
   controls.classList.toggle('recording', recording);
   $('record').hidden = recording; $('stop-recording').hidden = !recording; $('cancel-recording').hidden = !recording;
   $('stop-speaking').hidden = !speaking;
-  if (recording) $('voice-state').textContent = `Listening… press Stop when you are done (up to ${voice.maxSeconds} seconds).`;
-  const chosen = englishVoice();
+  $('send-now').hidden = $('edit-transcript').hidden = !voice.countdown;
+  $('voice-auto-label').hidden = !(on && canMonitor());
+  $('voice-auto').checked = voice.autoSend;
+  if (recording) $('voice-state').textContent = voice.autoTurn
+    ? (voice.heard ? 'Hearing you… just pause when you are done.' : 'Listening… start speaking whenever you like.')
+    : `Listening… press Stop when you are done (up to ${voice.maxSeconds} seconds).`;
+  const chosen = englishVoice(), hands = voice.autoSend && canMonitor();
   $('voice-note').hidden = !on;
   $('voice-note').textContent = `Read aloud by ${chosen ? `“${chosen.name}”${chosen.localService ? ' on this device' : ', an online voice that sends the text to your browser’s speech service'}` : 'your browser’s voice'}. ` +
     'Your recording is sent to Mistral (EU) only to turn it into text; this app does not store it, and Mistral may keep it for up to 30 days unless zero retention is enabled. ' +
-    'Nothing is sent until you press Send.';
+    (hands ? 'A pause of about 2 seconds ends your turn; interview answers wait 3 seconds so you can correct them.'
+      : 'Nothing is sent until you press Send.');
 }
 
 function render() {
@@ -528,6 +593,15 @@ $('voice-choice').onchange = () => {
   renderVoice(); speak('This is how I will sound.');
 };
 $('voice-preview').onclick = () => speak('Hello. This is how I will sound when I read the conversation aloud.');
+$('voice-auto').onchange = () => {
+  voice.autoSend = $('voice-auto').checked; remember('voiceAutoSend', voice.autoSend ? 'on' : 'off');
+  if (!voice.autoSend) { cancelCountdown(); stopMonitor(); voice.autoTurn = false; } // Finish this recording manually.
+  renderVoice();
+};
+$('send-now').onclick = () => { cancelCountdown(); $('answer-form').requestSubmit(); };
+$('edit-transcript').onclick = () => { cancelCountdown('Edit the text, then press Send.'); $('answer').focus(); };
+// Touching the text stops a pending automatic send.
+for (const event of ['pointerdown', 'keydown']) $('answer').addEventListener(event, () => cancelCountdown('Edit the text, then press Send.'));
 $('answer-form').onsubmit = event => {
   event.preventDefault();
   stopVoice();
@@ -630,6 +704,7 @@ async function initialize() {
     try {
       voice.on = voice.available && sessionStorage.getItem('voiceMode') === 'on';
       voice.choice = sessionStorage.getItem('voiceChoice') || '';
+      voice.autoSend = sessionStorage.getItem('voiceAutoSend') !== 'off'; // On by default.
     } catch { voice.on = false; }
     // Browsers load their voice list asynchronously.
     if (canSpeak()) { speechSynthesis.onvoiceschanged = renderVoiceChoices; renderVoiceChoices(); }

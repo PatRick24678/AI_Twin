@@ -24,6 +24,7 @@ import {
 const STATIC = {
   '/': ['index.html', 'text/html'],
   '/app.js': ['app.js', 'text/javascript'],
+  '/voice-activity.js': ['voice-activity.js', 'text/javascript'],
   '/styles.css': ['styles.css', 'text/css']
 };
 function json(res, status, value) {

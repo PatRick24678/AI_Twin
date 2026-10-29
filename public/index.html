@@ -54,6 +54,8 @@
       <label id="voice-choice-label" class="voice-choice" hidden>Voice
         <select id="voice-choice"></select></label>
       <button id="voice-preview" type="button" class="secondary" hidden>Hear it</button>
+      <label id="voice-auto-label" class="check voice-auto" hidden><input id="voice-auto" type="checkbox" checked>
+        Send automatically after a pause</label>
     </div>
     <p id="voice-note" class="muted" hidden></p>
   </div>
@@ -73,6 +75,8 @@
         <button id="stop-recording" type="button" hidden>■ Stop and transcribe</button>
         <button id="cancel-recording" type="button" class="secondary" hidden>Cancel recording</button>
         <button id="stop-speaking" type="button" class="secondary" hidden>Stop reading</button>
+        <button id="send-now" type="button" hidden>Send now</button>
+        <button id="edit-transcript" type="button" class="secondary" hidden>Edit first</button>
         <span id="voice-state" class="muted" aria-live="polite"></span>
       </div>
       <button>Send</button>

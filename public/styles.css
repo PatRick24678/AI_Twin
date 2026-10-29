@@ -108,6 +108,7 @@ button:disabled { opacity: .55; cursor: wait; }
 .voice-choice { margin: 0; font-size: .85rem; width: 100%; }
 .voice-choice select { display: block; width: 100%; margin-top: 4px; padding: 8px; font: inherit; border: 1px solid #a5b1ab; border-radius: 8px; background: #fff; color: inherit; }
 .voice-settings #voice-note { font-size: .8rem; line-height: 1.45; }
+.voice-auto { margin: 4px 0 0; width: 100%; text-align: right; }
 .voice-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 8px; }
 .voice-controls.recording #voice-state::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 50%; background: #a93929; }
 @media (prefers-reduced-motion: no-preference) { .voice-controls.recording #voice-state::before { animation: pulse 1.2s ease-in-out infinite; } @keyframes pulse { 50% { opacity: .3; } } }

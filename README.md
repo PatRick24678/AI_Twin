@@ -43,6 +43,15 @@ like typed ones for the reply-length default. Recording then starts
 to Mistral's speech-to-text API (`voxtral-mini-latest` by default, EU processing by default). The transcript
 is put in the answer or message box for the participant to check and edit. Nothing is sent until they press Send.
 
+**Hands-free** ("Send automatically after a pause", on by default in voice mode): the browser measures the
+microphone level (Web Audio) and `public/voice-activity.js` ends the turn after about 2 seconds of quiet
+following speech. Short noises do not count as speech, the room's noise floor is calibrated first, and nothing
+is sent if nobody speaks within 8 seconds. Twin messages are then sent immediately. Interview answers become
+profile notes, so they show a 3-second "Sending in 3…" countdown with Send now / Edit first; clicking or typing
+in the text cancels it. Saying "skip this question" or "stop" works as typed. Listening starts only after the
+voice has finished reading (no interrupting yet). Untick the option, or use a browser without Web Audio, for
+the manual Stop and Send flow. The thresholds are prototype defaults to tune with real use.
+
 Audio is bounded (2 MB, webm/ogg/mp4/wav), held in memory for that one request, never stored or logged, and
 the transcript is not saved in the session. There are at most 40 transcriptions per session. Mistral may keep
 API inputs for up to 30 days for abuse monitoring unless zero data retention has been approved for the account.
@@ -200,8 +209,9 @@ an application-level profile-to-chat journey. Live credentials and real model qu
 checked locally by the developer.
 
 After the interview pacing, agenda and voice changes (26 Oct 2026) the suite passed **137 tests** on Node 24.21.0.
-With the optional voice mode in the interview and conversation (29 Oct 2026) it passes **147 tests**: `test/speech.test.mjs` uses fake
-fetchers and a fake speech service, so it never contacts Mistral. The browser audio itself is a manual check. The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
+With the optional voice mode in the interview and conversation (29 Oct 2026) it passed **147 tests**: `test/speech.test.mjs` uses fake
+fetchers and a fake speech service, so it never contacts Mistral. With hands-free voice it passes **152 tests**:
+`test/voice-activity.test.mjs` drives the silence detector with synthetic levels. The browser audio itself is a manual check. The Phase 3 snapshot passed **129 tests** on Node 22.16.0: 87 prior scenarios retained/adapted to the new
 profile request shape, 28 new profile-core/builder tests, 12 new profile HTTP tests, and two adapter
 output-limit checks. The five older suites changed only where the old six-string confirmation setup
 no longer matched the structured profile contract. `test-support/profile-fixture.mjs` drives the real
