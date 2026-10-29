@@ -120,6 +120,20 @@ The interview itself is unchanged: about 6 questions, and the list is never show
 The only nudge: when wrapping up with fewer than two problems, the interviewer prefers friction or
 desired change for its next new area.
 
+In the profile check, the tracked problems appear as "Problems your future self could help with".
+
+Seeding:
+- They are seeded from the interview only after each quote is re-checked against its original answer.
+- Problems whose quotes all fail the re-check are left out.
+
+What the participant can do:
+- Reword, remove or add problems, up to 5. None is also fine.
+- Each one has a "Why this appeared" section.
+
+On confirmation:
+- `confirmProfile` stores `profile.problems` with an origin: `interview`, `participant_edited` or `participant`.
+- `profileContext()` passes only `{id, title, detail}` to the twin, never the quotes.
+
 ## Structured profile — increment 3
 
 This increment replaces the six-flat-statement handoff. Active interview observations are copied

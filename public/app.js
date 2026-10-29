@@ -1,7 +1,7 @@
 import { createSilenceDetector } from '/voice-activity.js';
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '';
-let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180 };
+let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180, problems: 5, problemTitle: 80, problemDetail: 240 };
 const stages = ['welcome', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done'];
 function errorMessage(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 async function api(path, data, signal, method = 'POST', auth = token) {
@@ -398,11 +398,7 @@ function addProfileEntry(entry = { id: '', topic: 'role', text: '', scope: '', i
   status.textContent = entry.status === 'needs_review'
     ? 'Unresolved: excluded by default. Check the wording before deliberately including it.'
     : entry.origin === 'participant_edited' ? 'Written or edited by you; not independently verified.' : 'An interpretation to check, not an independently verified fact.';
-  const provenance = document.createElement('details'), title = document.createElement('summary'); title.textContent = 'Why this appeared'; provenance.append(title);
-  for (const source of entry.evidence || []) {
-    const p = document.createElement('p'); p.className = 'muted'; p.textContent = `${source.label}: “${source.quote}”`; provenance.append(p);
-  }
-  if (!entry.evidence?.length) { const p = document.createElement('p'); p.textContent = 'Provided by you in this profile editor.'; provenance.append(p); }
+  const provenance = whyThisAppeared(entry.evidence);
   if (entry.wordingBeforeEdit) {
     const p = document.createElement('p'); p.textContent = `Earlier interpretation, before your edit: ${entry.wordingBeforeEdit}`; provenance.append(p);
   }
@@ -417,6 +413,36 @@ function addProfileEntry(entry = { id: '', topic: 'role', text: '', scope: '', i
   card.append(includeLabel, topicLabel, statementLabel, scopeLabel, status, provenance, remove);
   profileGroup(entry.topic).append(card); updateProfileCount();
 }
+function whyThisAppeared(evidence = []) {
+  const provenance = document.createElement('details'), title = document.createElement('summary'); title.textContent = 'Why this appeared'; provenance.append(title);
+  for (const source of evidence) {
+    const p = document.createElement('p'); p.className = 'muted'; p.textContent = `${source.label}: “${source.quote}”`; provenance.append(p);
+  }
+  if (!evidence.length) { const p = document.createElement('p'); p.textContent = 'Provided by you in this profile editor.'; provenance.append(p); }
+  return provenance;
+}
+// Problems the twin will offer to work on. Kept, reworded, removed or added by the participant; none is fine.
+function addProblem(problem = { id: '', title: '', detail: '', evidence: [] }) {
+  const card = document.createElement('div'); card.className = 'claim problem'; card.dataset.problemId = problem.id;
+  const titleLabel = document.createElement('label'); titleLabel.textContent = 'Problem';
+  const title = document.createElement('input'); title.className = 'problem-title'; title.value = problem.title;
+  title.maxLength = profileLimits.problemTitle; titleLabel.append(title);
+  const detailLabel = document.createElement('label'); detailLabel.textContent = 'Context (optional)';
+  const detail = document.createElement('textarea'); detail.className = 'problem-detail'; detail.value = problem.detail || '';
+  detail.maxLength = profileLimits.problemDetail; detail.rows = 2; detailLabel.append(detail);
+  const status = document.createElement('small');
+  status.textContent = problem.origin === 'interview' ? 'Picked up from your answers. Check that it is really a problem for you.' : 'Written or edited by you.';
+  const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary'; remove.textContent = 'Remove';
+  remove.onclick = () => { card.remove(); updateProfileCount(); };
+  title.oninput = detail.oninput = () => { status.textContent = 'Edited by you.'; updateProfileCount(); };
+  card.append(titleLabel, detailLabel, status, whyThisAppeared(problem.evidence), remove);
+  $('problems').append(card); updateProfileCount();
+}
+function problemRows() {
+  return [...$('problems').querySelectorAll('.problem')].map(card => ({
+    id: card.dataset.problemId, title: card.querySelector('.problem-title').value.trim(), detail: card.querySelector('.problem-detail').value.trim()
+  }));
+}
 function profileRows() {
   return [...$('claims').querySelectorAll('.claim')].filter(card => card.querySelector('.include-entry').checked).map(card => ({
     id: card.dataset.entryId, topic: card.querySelector('.entry-topic').value,
@@ -426,7 +452,10 @@ function profileRows() {
 function updateProfileCount() {
   const entries = profileRows(), all = $('claims').querySelectorAll('.claim').length;
   $('profile-count').textContent = `${entries.length} of ${all} statements included. There is no target score to fill.`;
-  $('confirm-profile').disabled = Boolean(job) || !$('approve-profile').checked || entries.length === 0 || entries.some(item => !item.text);
+  const problems = problemRows();
+  $('confirm-profile').disabled = Boolean(job) || !$('approve-profile').checked || entries.length === 0 || entries.some(item => !item.text) || problems.some(item => !item.title);
+  $('problems-none').hidden = problems.length > 0;
+  $('add-problem').disabled = Boolean(job) || problems.length >= profileLimits.problems;
   $('add-claim').disabled = Boolean(job) || all >= profileLimits.entries;
   const unknown = Object.entries(profileTopics).filter(([id]) => id !== 'other' && !entries.some(item => item.topic === id));
   $('profile-unknown').textContent = unknown.length ? unknown.map(([, label]) => label).join(', ') + '. These details will not be filled automatically.' : 'Every topic has at least one included statement. That is not a completeness or accuracy guarantee.';
@@ -439,6 +468,8 @@ function renderProfileEditor(force = false) {
   const source = session.profile?.entries || draft?.entries || [];
   source.forEach(item => addProfileEntry(item));
   if (!source.length) addProfileEntry();
+  $('problems').replaceChildren();
+  (session.profile ? session.profile.problems || [] : draft?.problems || []).forEach(item => addProblem(item));
   const unresolved = session.profile ? session.profile.unresolved
     : (draft?.questions || []).filter(q => ['unresolved', 'skipped'].includes(q.status));
   $('profile-unresolved').hidden = unresolved.length === 0;
@@ -650,11 +681,12 @@ $('clarification-form').onsubmit = event => { event.preventDefault(); run(signal
 $('skip-clarification').onclick = () => run(signal => submitClarification('skip', signal));
 $('edit-profile').onclick = () => editProfile();
 $('cancel-edit').onclick = () => { localStage = ''; render(); };
+$('add-problem').onclick = () => { if (problemRows().length < profileLimits.problems) addProblem(); };
 $('add-claim').onclick = () => { if ($('claims').querySelectorAll('.claim').length < profileLimits.entries) addProfileEntry(); };
 $('approve-profile').onchange = updateProfileCount;
 $('confirm-profile').onclick = () => run(async signal => {
   session = await api('/api/profile', { draftId: session.profileDraft?.id, profileVersion: session.profileVersion,
-    entries: profileRows(), acknowledged: $('approve-profile').checked }, signal);
+    entries: profileRows(), problems: problemRows(), acknowledged: $('approve-profile').checked }, signal);
   localStage = ''; render(); await prepareConversation(signal);
 });
 $('open-scene').onclick = () => run(signal => talk('open', '', signal));

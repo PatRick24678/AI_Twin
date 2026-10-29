@@ -248,3 +248,40 @@ test('clarification prompt only includes the relevant entries, not retired ones'
   assert.ok(!prompt.includes('PRIVATE_RETIRED')); assert.ok(!prompt.includes('I coordinate projects.'));
   assert.ok(prompt.includes('I explain client context.'));
 });
+
+function problemSession() {
+  const s = sourceSession(), message = { id: randomUUID(), role: 'user', kind: 'answer', text: 'Approvals take weeks and invoices pile up.' };
+  s.interview.messages.push(message);
+  const problem = (title, quote, status = 'tentative') => ({ id: randomUUID(), topic: 'friction', title, detail: `${title}.`,
+    evidence: [{ sourceMessageId: message.id, quote }], status });
+  s.interview.problems.push(problem('Chasing approvals', 'Approvals take weeks'), problem('Invented problem', 'not said'),
+    problem('Withdrawn problem', 'invoices pile up', 'dropped'));
+  return s;
+}
+
+test('interview problems seed the draft only with re-checked quotes; dropped ones stay out', () => {
+  const draft = createProfileDraft(problemSession(), empty());
+  assert.deepEqual(draft.problems.map(p => p.title), ['Chasing approvals']);
+  assert.deepEqual(draft.problems[0].evidence[0].quote, 'Approvals take weeks');
+  assert.equal(draft.problems[0].origin, 'interview');
+  assert.deepEqual(createProfileDraft(problemSession(), empty(), 'manual').problems, []);
+});
+
+test('the participant keeps, rewords, removes or adds problems; none is fine and five is the limit', () => {
+  const draft = applyProfileAudit(createProfileDraft(problemSession(), empty()), audit()), s = sessionWithDraft(draft);
+  const [kept] = draft.problems, base = submission(draft);
+  assert.deepEqual(confirmProfile(s, base).problems, []);
+  let profile = confirmProfile(s, { ...base, problems: [{ id: kept.id, title: kept.title, detail: kept.detail }, { id: '', title: 'Weekly reports', detail: '' }] });
+  assert.deepEqual(profile.problems.map(p => [p.title, p.origin, p.status, p.evidence.length]),
+    [['Chasing approvals', 'interview', 'confirmed', 1], ['Weekly reports', 'participant', 'confirmed', 0]]);
+  profile = confirmProfile(s, { ...base, problems: [{ id: kept.id, title: 'Waiting on sign-off', detail: '' }] });
+  assert.equal(profile.problems[0].origin, 'participant_edited');
+  const many = Array.from({ length: 6 }, (_, i) => ({ id: '', title: `Problem ${i}`, detail: '' }));
+  for (const problems of [many, [{ id: randomUUID(), title: 'Unknown ID', detail: '' }], [{ id: '', title: 'Same', detail: '' }, { id: '', title: 'same', detail: '' }],
+    [{ id: '', title: '', detail: '' }], [{ id: '', title: 'Extra field', detail: '', evidence: [] }]]) {
+    assert.throws(() => confirmProfile(s, { ...base, problems }));
+  }
+  const context = profileContext({ ...s, profile: confirmProfile(s, { ...base, problems: [{ id: kept.id, title: kept.title, detail: kept.detail }] }) });
+  assert.deepEqual(context.problems, [{ id: kept.id, title: 'Chasing approvals', detail: 'Chasing approvals.' }]);
+  assert.doesNotMatch(JSON.stringify(context), /Approvals take weeks/);
+});

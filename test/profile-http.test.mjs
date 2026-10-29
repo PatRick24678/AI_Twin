@@ -187,3 +187,19 @@ test('HTTP explicit stopping during clarification avoids another model call', as
   const result = await f.call('/api/profile/clarify', { draftId: draft.id, questionId: draft.questions[0].id, text: "Let's stop here." }, token);
   assert.equal(result.body.stage, 'review'); assert.equal(result.body.profileDraft.questions[0].status, 'skipped'); assert.equal(f.model.calls.length, calls);
 });
+
+test('HTTP problems found in the interview are reviewed with the profile and reach the twin without quotes', async t => {
+  const f = await fixture(t), token = await f.seed();
+  const review = await f.build(token);
+  const [found] = review.body.profileDraft.problems;
+  assert.equal(found.title, 'I dislike chasing updates.');
+  assert.equal(found.evidence[0].quote, 'I dislike chasing updates.');
+  const input = { ...f.payload(review.body), problems: [{ id: found.id, title: 'Chasing updates', detail: found.detail }, { id: '', title: 'Monthly reporting', detail: '' }] };
+  const result = await f.call('/api/profile', input, token);
+  assert.deepEqual(result.body.profile.problems.map(p => [p.title, p.origin]), [['Chasing updates', 'participant_edited'], ['Monthly reporting', 'participant']]);
+  await f.call('/api/suggestions', { profileVersion: 1, mode: 'skip' }, token);
+  await f.call('/api/twin', { action: 'open' }, token);
+  const context = f.model.calls.at(-1).data.confirmedProfile;
+  assert.deepEqual(context.problems.map(p => p.title), ['Chasing updates', 'Monthly reporting']);
+  assert.ok(!Object.hasOwn(context.problems[0], 'evidence'));
+});
