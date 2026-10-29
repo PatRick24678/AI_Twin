@@ -56,6 +56,9 @@ Audio is bounded (2 MB, webm/ogg/mp4/wav), held in memory for that one request, 
 the transcript is not saved in the session. There are at most 40 transcriptions per session. Mistral may keep
 API inputs for up to 30 days for abuse monitoring unless zero data retention has been approved for the account.
 
+Voice also works for the optional profile clarification question. It is read aloud and answered by speaking,
+with the same 3-second review countdown, because that answer can change profile statements.
+
 To enable it, add `MISTRAL_API_KEY=...` to the same external `secrets.env` (or the host environment).
 Without that key the toggle stays hidden and the app is text-only. `MISTRAL_STT_MODEL` in `.env` can name
 another Voxtral model.
@@ -101,8 +104,13 @@ skip are ignored rather than failing the turn; the skipped topic is paused by th
 When a turn finally fails validation, the server terminal prints the validator's rule messages
 (`Interview turn rejected: …`), never participant text or provider errors.
 
-Normal turns make one model call. Invalid generated content gets at most one repair per request;
-manual retries are capped at four API attempts for the same turn, and 40 across an interview.
+Normal turns make one model call. Invalid generated content gets at most one repair per request.
+Recovery after a failed response:
+- The browser first retries quietly, twice at most, after about 1.5 s and then 4 s.
+- The message shown meanwhile is "Your interviewer is taking a moment longer…".
+- The Retry button appears only if those retries also fail.
+
+All attempts count towards the cap: four API attempts for the same turn, and 40 across an interview.
 The interview aims for about 6 questions: the opening says so, the interviewer signposts from question 5,
 and one question is marked `last` (allowed from question 5 once the core areas are addressed, required
 at 6 with the core addressed, and at 8 regardless). The controller sets or clears that flag itself rather

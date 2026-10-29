@@ -63,6 +63,11 @@ async function audioBody(req) {
   }
   return { type, audio: Buffer.concat(chunks) };
 }
+// Speaking is offered where the participant answers: a waiting interview question, a profile clarification
+// or the conversation.
+const VOICE_STAGE = 'Voice input is available while a question is waiting or in the conversation.';
+const voiceAllowed = s => (s.stage === 'intake' && s.interview.status === 'waiting') ||
+  (s.stage === 'clarify' && s.profileDraft?.status === 'clarifying') || s.stage === 'twin';
 export function createApp(model = new AnthropicModel(), speech = createSpeech()) {
   const sessions = new Map();
   const ttl = 30 * 60 * 1000;
@@ -223,8 +228,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
       requireThat(method === 'POST', 'Not found.', 404);
       if (path === '/api/transcribe') {
         requireThat(speech, 'Voice input is not configured on this server.', 503);
-        requireThat((s.stage === 'intake' && s.interview.status === 'waiting') || s.stage === 'twin',
-          'Voice input is available while an interview question is waiting or in the conversation.', 409);
+        requireThat(voiceAllowed(s), VOICE_STAGE, 409);
         requireThat(!s.speechController, 'A recording is already being transcribed.', 409);
         requireThat(s.transcriptions < SPEECH_LIMITS.perSession,
           'This session has reached its voice limit. Type your answers instead.', 429);
@@ -242,8 +246,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
       requireThat(sessions.get(token) === s, 'Session was reset. Start again.', 401);
       if (path === '/api/transcribe/live') {
         requireThat(speech?.live, 'Live transcription is not available on this server.', 503);
-        requireThat((s.stage === 'intake' && s.interview.status === 'waiting') || s.stage === 'twin',
-          'Voice input is available while an interview question is waiting or in the conversation.', 409);
+        requireThat(voiceAllowed(s), VOICE_STAGE, 409);
         requireThat(s.transcriptions < SPEECH_LIMITS.perSession,
           'This session has reached its voice limit. Type your answers instead.', 429);
         s.transcriptions += 1;

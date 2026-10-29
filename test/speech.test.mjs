@@ -219,3 +219,23 @@ test('without live transcription the CSP allows only this server', async t => {
     assert.equal((await call('/api/transcribe/live', { token: made.body.token, body: {} })).status, 503);
   }
 });
+
+test('HTTP voice works for a profile clarification, and only while that question is waiting', async t => {
+  const base = { name: 'SPEECH-TEST-NO-REAL-API', health: async () => ({ ok: true }), chat: async (messages, { schema }) => {
+    const data = JSON.parse(messages[1].content);
+    const entry = data.entries.find(e => e.topic === 'communication');
+    return { text: JSON.stringify(schema.properties.sampleNotes ? { sampleNotes: [], clarifications: [{ topic: 'communication',
+      question: 'Is that also how you write to clients?', reason: 'Audience may change it.', entryIds: [entry.id], usesSample: false }] }
+      : { resolved: false, decisions: [], additions: [] }), metrics: {} };
+  } };
+  const speech = { transcribe: async () => ({ text: 'Not to clients, no.', seconds: 2 }) };
+  const { call, root } = await app(t, speech, withInterviewFixture(base));
+  const token = (await call('/api/session', { body: { name: 'Alex', consent: true } })).body.token;
+  await completeTestInterview(root, token, ['I coordinate projects.', 'Approvals are slow.', 'I write briefly internally.']);
+  const draft = await call('/api/sample', { token, body: { text: '', context: '', style: 'none' } });
+  assert.equal(draft.body.stage, 'clarify');
+  assert.deepEqual((await call('/api/transcribe', { token, body: audio, type: 'audio/webm' })).body, { text: 'Not to clients, no.' });
+  const question = draft.body.profileDraft.questions[0];
+  await call('/api/profile/clarify', { token, body: { draftId: draft.body.profileDraft.id, questionId: question.id, kind: 'skip' } });
+  assert.equal((await call('/api/transcribe', { token, body: audio, type: 'audio/webm' })).status, 409);
+});

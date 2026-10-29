@@ -153,11 +153,13 @@ const RECORDING_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;code
 const canSpeak = () => 'speechSynthesis' in window;
 function remember(key, value) { try { sessionStorage.setItem(key, value); } catch { /* Optional convenience. */ } }
 function storeVoicePreference() { remember('voiceMode', voice.on ? 'on' : 'off'); }
-// Where voice applies: the interview answer box or the conversation message box.
+// Where voice applies: the interview, a profile clarification or the conversation. Answers that become
+// profile notes (interview, clarification) get the review countdown; conversation messages send at once.
 function voicePlace() {
   const stage = localStage || session?.stage;
-  return stage === 'intake' ? { panel: 'intake', form: 'answer-form', box: 'answer' }
-    : stage === 'twin' ? { panel: 'twin', form: 'message-form', box: 'message' } : null;
+  return stage === 'intake' ? { panel: 'intake', form: 'answer-form', box: 'answer', review: true }
+    : stage === 'clarify' ? { panel: 'clarify', form: 'clarification-form', box: 'clarification-answer', review: true }
+    : stage === 'twin' ? { panel: 'twin', form: 'message-form', box: 'message', review: false } : null;
 }
 function voiceOptions() {
   const all = canSpeak() ? speechSynthesis.getVoices() : [];
@@ -206,6 +208,8 @@ function nextSpeech() {
     const last = [...session.intake].reverse().find(message => message.role === 'assistant');
     return key && { key, text: last?.content || '', listen: key !== 'closing' };
   }
+  const question = session?.profileDraft?.status === 'clarifying' && session.profileDraft.questions.find(q => q.status === 'pending');
+  if (place?.panel === 'clarify') return question ? { key: `clarify:${question.id}`, text: question.question, listen: true } : null;
   const list = currentThread(), last = list.at(-1);
   if (place?.panel === 'twin' && last?.role === 'assistant') {
     return { key: `twin:${session.profileVersion}:${activeProblem}:${list.length}`, text: last.content,
@@ -373,10 +377,10 @@ function stopRecording(cancel = false) {
   voice.cancelled = cancel; clearTimeout(voice.timer); voice.recorder.stop();
 }
 // Interview answers become profile notes, so they wait briefly where a click can stop them.
-function startCountdown() {
+function startCountdown(form) {
   let left = 3;
   const tick = () => {
-    if (left === 0) { voice.countdown = null; renderVoice(); $('answer-form').requestSubmit(); return; }
+    if (left === 0) { voice.countdown = null; renderVoice(); $(form).requestSubmit(); return; }
     $('voice-state').textContent = `Sending in ${left}… click the text or "Edit first" to correct it.`;
     left -= 1; voice.countdown = setTimeout(tick, 1000);
   };
@@ -425,8 +429,7 @@ async function finishRecording() {
   }
   // Hands-free: the conversation sends at once; the interview waits briefly for corrections.
   if (auto && heardText && voice.on && !job && voicePlace()?.panel === place.panel) {
-    if (place.panel === 'twin') return $('message-form').requestSubmit();
-    return startCountdown();
+    return place.review ? startCountdown(place.form) : $(place.form).requestSubmit();
   }
   $(place.box).focus();
 }
@@ -441,6 +444,7 @@ function renderVoice() {
     if (controls.parentElement !== form) form.insertBefore(controls, form.querySelector('button:not([type=button])'));
   }
   const ready = place?.panel === 'intake' ? session?.interview?.status === 'waiting'
+    : place?.panel === 'clarify' ? session?.profileDraft?.status === 'clarifying'
     : place?.panel === 'twin' && currentThread().length > 0;
   $('voice-toggle').setAttribute('aria-pressed', String(voice.on));
   $('voice-toggle-label').textContent = voice.on ? 'Voice on' : 'Voice off';
@@ -714,7 +718,10 @@ async function talk(action, text, signal, suggestionId = '') {
   if (!complete) throw new Error('The stream was interrupted. Retry your message.');
   $('message').value = ''; pending = ''; render();
 }
-async function interviewRequest(path, data, signal) {
+// A failed interviewer response is retried quietly (the answer is already kept), at most twice and within
+// the server's per-turn budget. Only if that also fails does the Retry button appear.
+const AUTO_RETRY_DELAYS = [1500, 4000];
+async function interviewRequest(path, data, signal, retry = 0) {
   const previousQuestion = session?.interview?.questionId;
   const previousTurns = session?.interview?.turns || 0;
   setLoading(
@@ -730,6 +737,13 @@ async function interviewRequest(path, data, signal) {
     if (!signal.aborted) {
       try { session = await api('/api/session', undefined, signal, 'GET'); }
       catch { /* Keep the last known state and the original error. */ }
+    }
+    const interview = session?.interview;
+    if (!signal.aborted && retry < AUTO_RETRY_DELAYS.length && interview?.status === 'thinking' && interview.retryAllowed) {
+      setLoading('Your interviewer is taking a moment longer…', 'Trying again automatically. Your answer is kept.');
+      await new Promise(resolve => setTimeout(resolve, AUTO_RETRY_DELAYS[retry]));
+      signal.throwIfAborted();
+      return interviewRequest('/api/interview/next', { requestId: interview.requestId }, signal, retry + 1);
     }
     throw error;
   } finally {
@@ -770,10 +784,12 @@ $('voice-auto').onchange = () => {
   if (!voice.autoSend) { cancelCountdown(); stopMonitor(); voice.autoTurn = false; } // Finish this recording manually.
   renderVoice();
 };
-$('send-now').onclick = () => { cancelCountdown(); $('answer-form').requestSubmit(); };
-$('edit-transcript').onclick = () => { cancelCountdown('Edit the text, then press Send.'); $('answer').focus(); };
+$('send-now').onclick = () => { cancelCountdown(); $(voicePlace().form).requestSubmit(); };
+$('edit-transcript').onclick = () => { cancelCountdown('Edit the text, then press Send.'); $(voicePlace().box).focus(); };
 // Touching the text stops a pending automatic send.
-for (const event of ['pointerdown', 'keydown']) $('answer').addEventListener(event, () => cancelCountdown('Edit the text, then press Send.'));
+for (const box of ['answer', 'clarification-answer']) {
+  for (const event of ['pointerdown', 'keydown']) $(box).addEventListener(event, () => cancelCountdown('Edit the text, then press Send.'));
+}
 $('answer-form').onsubmit = event => {
   event.preventDefault();
   stopVoice();
@@ -818,8 +834,8 @@ async function submitClarification(kind, signal) {
     }
   }
 }
-$('clarification-form').onsubmit = event => { event.preventDefault(); run(signal => submitClarification('answer', signal)); };
-$('skip-clarification').onclick = () => run(signal => submitClarification('skip', signal));
+$('clarification-form').onsubmit = event => { event.preventDefault(); stopVoice(); run(signal => submitClarification('answer', signal)); };
+$('skip-clarification').onclick = () => { stopVoice(); run(signal => submitClarification('skip', signal)); };
 $('edit-profile').onclick = () => editProfile();
 $('leave-problem').onclick = () => focusProblem('');
 $('cancel-edit').onclick = () => { localStage = ''; render(); };
