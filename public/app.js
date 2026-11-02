@@ -2,6 +2,7 @@ import { createSilenceDetector } from '/voice-activity.js';
 import { LIVE, toPcm16, sessionUpdate, appendAudio, endAudio, liveStart, reduceLive } from '/live-transcript.js';
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '', activeProblem = '';
+let user = null, accountsEnabled = false; // A signed-in account (saved twin), or null for a guest.
 let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180, problems: 5, problemTitle: 80, problemDetail: 240 };
 const stages = ['welcome', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done'];
 function errorMessage(message = '') { $('error').textContent = message; $('error').hidden = !message; }
@@ -14,6 +15,8 @@ async function api(path, data, signal, method = 'POST', auth = token) {
   });
   const result = await response.json();
   signal?.throwIfAborted();
+  // A saved twin needs a valid login: when it has lapsed, go back to the log-in screen.
+  if (response.status === 401 && user && auth === token) { user = null; token = ''; session = null; localStage = ''; activeProblem = ''; }
   if (!response.ok) {
     if (result.session && auth === token) session = result.session;
     throw new Error(result.error || 'The request failed.');
@@ -472,7 +475,14 @@ function renderVoice() {
 function render() {
   const stage = localStage || session?.stage || 'welcome';
   stages.forEach(id => { $(id).hidden = id !== stage; });
-  $('reset').hidden = !session;
+  $('reset').hidden = !session || Boolean(user);
+  $('account-bar').hidden = $('logout').hidden = !user;
+  $('account-email').textContent = user?.email || '';
+  $('account-entry').hidden = !accountsEnabled;
+  $('start-guest').textContent = accountsEnabled ? 'Try without saving' : 'Start the experience';
+  $('welcome-note').textContent = accountsEnabled
+    ? 'Without an account nothing is saved: refreshing or resetting starts again. English, text-first prototype.'
+    : 'English, text-first prototype. No login. Refreshing starts a new browser session.';
   renderSuggestions();
   renderProblems();
   renderInterview();
@@ -862,17 +872,51 @@ $('reflection-form').onsubmit = event => {
     localStage = ''; render();
   });
 };
-$('reset').onclick = async () => {
-  const oldToken = token;
+// Clears the page, not the server: used by Reset (guests) and Log out (accounts).
+function clearView() {
   stopVoice(); voice.spoken = '';
-  job?.abort(); job = null; token = ''; session = null; localStage = ''; pending = ''; reviewKey = '';
+  job?.abort(); job = null; token = ''; session = null; localStage = ''; pending = ''; reviewKey = ''; activeProblem = '';
   document.querySelectorAll('form').forEach(form => form.reset());
-  $('claims').replaceChildren(); $('intake-thread').replaceChildren(); $('twin-thread').replaceChildren();
+  $('claims').replaceChildren(); $('problems').replaceChildren(); $('intake-thread').replaceChildren(); $('twin-thread').replaceChildren();
   $('facts').replaceChildren(); $('saved-reflection').textContent = '';
   for (const id of ['profile-unresolved', 'profile-unknown', 'limited-profile', 'twin-unknown', 'profile-count']) $(id).textContent = '';
   $('profile-unresolved').hidden = true; $('limited-profile').hidden = true;
   $('twin-title').textContent = 'Your future self'; $('review-note').textContent = ''; $('metrics').textContent = '';
-  errorMessage(); render(); busy();
+}
+// After logging in or signing up: continue where the twin was left, starting the interview if needed.
+async function enterAccount(result, signal) {
+  user = result.user; token = result.token; session = result.session; localStage = ''; render();
+  if (session.stage === 'intake' && session.interview.status === 'thinking') {
+    await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
+  }
+}
+$('show-signup').onclick = () => { $('login-form').hidden = true; $('signup-form').hidden = false; $('signup-name').focus(); };
+$('show-login').onclick = () => { $('signup-form').hidden = true; $('login-form').hidden = false; $('login-email').focus(); };
+$('login-form').onsubmit = event => {
+  event.preventDefault();
+  run(async signal => {
+    const result = await api('/api/auth/login', { email: $('login-email').value, password: $('login-password').value }, signal);
+    $('login-password').value = '';
+    await enterAccount(result, signal);
+  });
+};
+$('signup-form').onsubmit = event => {
+  event.preventDefault();
+  run(async signal => {
+    const result = await api('/api/auth/signup', { name: $('signup-name').value, email: $('signup-email').value,
+      password: $('signup-password').value, consent: $('signup-consent').checked }, signal);
+    $('signup-password').value = '';
+    await enterAccount(result, signal);
+  });
+};
+$('logout').onclick = async () => {
+  clearView(); user = null; errorMessage(); render(); busy();
+  try { await api('/api/auth/logout', {}, undefined, 'POST', ''); }
+  catch { errorMessage('Logged out on this page. The server could not confirm it; the login expires after 30 minutes.'); }
+};
+$('reset').onclick = async () => {
+  const oldToken = token;
+  clearView(); errorMessage(); render(); busy();
   try { if (oldToken) await api('/api/session', undefined, undefined, 'DELETE', oldToken); }
   catch { errorMessage('Browser view cleared. Server deletion could not be confirmed; the old session expires after inactivity.'); }
 };
@@ -889,6 +933,12 @@ async function initialize() {
   try {
     const info = await api('/api/info', undefined, undefined, 'GET');
     profileTopics = info.profileTopics; profileLimits = info.profileLimits;
+    accountsEnabled = Boolean(info.accounts);
+    // A login cookie from earlier: continue that twin without asking again.
+    if (accountsEnabled) {
+      const me = await api('/api/auth/me', undefined, undefined, 'GET', '');
+      if (me.user) run(signal => enterAccount(me, signal));
+    }
     // Voice needs the server's speech provider plus browser recording support.
     voice.available = Boolean(info.voice?.available && 'MediaRecorder' in window && navigator.mediaDevices?.getUserMedia);
     // Live words need the server's realtime model plus AudioWorklet and WebSocket support; otherwise record, then transcribe.

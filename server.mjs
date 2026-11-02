@@ -14,6 +14,11 @@ import { advanceProfile, canRetryProfile } from './lib/profile-builder.mjs';
 import { AnthropicModel } from './lib/anthropic-model.mjs';
 import { createSpeech, SPEECH_LIMITS, AUDIO_TYPES } from './lib/speech-model.mjs';
 import { generateSuggestions } from './lib/suggestions.mjs';
+import { createCryptoBox } from './lib/crypto-box.mjs';
+import { openStore } from './lib/store.mjs';
+import {
+  AUTH, checkEmail, checkPassword, hashPassword, verifyPassword, newSessionId, hashToken, readCookie, sessionCookie, createThrottle
+} from './lib/auth.mjs';
 import { createInterview, recordInterviewInput } from './lib/interview-state.mjs';
 import { InterviewError, INTERVIEW_LIMITS } from './lib/interview-contract.mjs';
 import {
@@ -68,16 +73,93 @@ async function audioBody(req) {
 const VOICE_STAGE = 'Voice input is available while a question is waiting or in the conversation.';
 const voiceAllowed = s => (s.stage === 'intake' && s.interview.status === 'waiting') ||
   (s.stage === 'clarify' && s.profileDraft?.status === 'clarifying') || s.stage === 'twin';
-export function createApp(model = new AnthropicModel(), speech = createSpeech()) {
+// Saved accounts are optional: without DATA_ENCRYPTION_KEY the app runs guest-only, as before.
+export function createStore() {
+  if (!process.env.DATA_ENCRYPTION_KEY) return null;
+  try { return openStore({ box: createCryptoBox() }); }
+  catch (error) { console.warn(`[storage] ${error.message} Saved accounts are disabled.`); return null; }
+}
+// What is saved for an account: the working state, minus what must never be stored.
+const SAVED = ['name', 'stage', 'answers', 'intake', 'interview', 'interviewUsage', 'interviewRetryAllowed', 'sample', 'claims',
+  'facts', 'profile', 'profileDraft', 'profileRetryAllowed', 'messages', 'problemThreads', 'reflection', 'profileVersion',
+  'suggestions', 'suggestionStatus', 'transcriptions', 'notice'];
+export function savedDocument(s) {
+  const document = structuredClone(Object.fromEntries(SAVED.map(key => [key, s[key]])));
+  // Pasted work samples may be confidential company material: they stay in memory for this visit only.
+  if (document.sample) document.sample.text = '';
+  if (document.profileDraft?.sample) document.profileDraft.sample.text = '';
+  return document;
+}
+const DAY = 24 * 60 * 60 * 1000;
+
+export function createApp(model = new AnthropicModel(), speech = createSpeech(), store = createStore()) {
   const sessions = new Map();
+  const accounts = new Map(); // Account ID → working token: one working copy per account in memory.
+  const throttle = createThrottle();
   const ttl = 30 * 60 * 1000;
   let modelBusy = false; // Keep one generation at a time for this private development prototype.
   function sweep() {
     for (const [token, s] of sessions) {
-      if (Date.now() - s.touched > ttl) { s.controller?.abort(); s.speechController?.abort(); sessions.delete(token); }
+      if (Date.now() - s.touched > ttl) {
+        s.controller?.abort(); s.speechController?.abort(); sessions.delete(token);
+        if (s.userId) accounts.delete(s.userId); // Already saved after each change; this only frees memory.
+      }
     }
   }
   const timer = setInterval(sweep, 60000).unref();
+  // Storage limitation: inactive accounts and expired logins are removed at start-up and daily.
+  store?.purge();
+  const purgeTimer = store ? setInterval(() => store.purge(), DAY).unref() : null;
+  function workspace(name, userId = null) {
+    return {
+      name, userId, stage: 'intake', answers: [], intake: [], interview: createInterview(),
+      interviewUsage: newInterviewUsage(), interviewRetryAllowed: true,
+      sample: null, claims: [], facts: [], profile: null, profileDraft: null, profileRetryAllowed: false, messages: [], problemThreads: {}, reflection: '',
+      profileVersion: 0, suggestions: [], suggestionStatus: 'pending', transcriptions: 0,
+      metrics: null, notice: '', touched: Date.now()
+    };
+  }
+  function persist(s) {
+    if (!s.userId || !store) return;
+    try { store.saveTwin(s.userId, savedDocument(s)); }
+    catch (error) { console.error(`[storage] Could not save a twin: ${error.message}`); }
+  }
+  // The account's working copy: the one in memory, else the saved twin, else a new one.
+  function openWorkspace(user, name = '') {
+    const existing = accounts.get(user.id);
+    if (existing && sessions.has(existing)) return existing;
+    requireThat(sessions.size < 20, 'Too many sessions. Reset an old one or restart the server.', 429);
+    const saved = store.loadTwin(user.id);
+    const s = saved ? { ...workspace(saved.name, user.id), ...saved, userId: user.id, touched: Date.now() }
+      : workspace(name || user.email.split('@')[0], user.id);
+    const token = randomBytes(32).toString('base64url');
+    sessions.set(token, s); accounts.set(user.id, token);
+    if (!saved) persist(s);
+    return token;
+  }
+  function signIn(res, user) {
+    const id = newSessionId();
+    store.createSession({ idHash: hashToken(id), userId: user.id, expiresAt: Date.now() + AUTH.absoluteMs });
+    store.touchUser(user.id);
+    res.setHeader('Set-Cookie', sessionCookie(id));
+  }
+  // The signed-in account for this request, or null. Expired or idle logins are removed.
+  function currentUser(req) {
+    const id = readCookie(req.headers.cookie);
+    if (!store || !id) return null;
+    const idHash = hashToken(id), record = store.findSession(idHash), now = Date.now();
+    if (!record) return null;
+    if (now > record.expiresAt || now - record.lastSeenAt > AUTH.idleMs) { store.deleteSession(idHash); return null; }
+    store.touchSession(idHash); store.touchUser(record.userId);
+    return store.findUser(record.userId) || null;
+  }
+  const signedIn = (user, token) => ({ user: { email: user.email, role: user.role }, token, session: publicSession(sessions.get(token)) });
+  function dropWorkspace(token) {
+    const s = sessions.get(token);
+    if (!s) return;
+    persist(s); s.controller?.abort(); s.speechController?.abort(); sessions.delete(token);
+    if (s.userId) accounts.delete(s.userId);
+  }
   async function useModel(s, res, work) {
     requireThat(!modelBusy, 'Another AI request is running. Try again shortly.', 429);
     modelBusy = true;
@@ -189,7 +271,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
       }
       if (method === 'GET' && path === '/api/info') {
         return json(res, 200, { examples: EXAMPLES, model: model.name, profileTopics: PROFILE_TOPICS, profileLimits: PROFILE_LIMITS,
-          voice: { available: Boolean(speech), live: Boolean(speech?.live), maxSeconds: SPEECH_LIMITS.seconds } });
+          voice: { available: Boolean(speech), live: Boolean(speech?.live), maxSeconds: SPEECH_LIMITS.seconds },
+          accounts: Boolean(store) });
       }
       if (method === 'GET' && path === '/api/health') {
         let result;
@@ -204,24 +287,61 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
         const input = await body(req);
         requireThat(input.consent === true, 'Confirm the prototype notice first.');
         requireThat(sessions.size < 20, 'Too many sessions. Reset an old one or restart the server.', 429);
-        const token = randomBytes(32).toString('base64url');
-        const s = {
-          name: text(input.name, 'Name or alias', 50, 1), stage: 'intake',
-          answers: [], intake: [], interview: createInterview(),
-          interviewUsage: newInterviewUsage(), interviewRetryAllowed: true,
-          sample: null, claims: [], facts: [], profile: null, profileDraft: null, profileRetryAllowed: false, messages: [], problemThreads: {}, reflection: '',
-          profileVersion: 0, suggestions: [], suggestionStatus: 'pending', transcriptions: 0,
-          metrics: null, notice: '', touched: Date.now()
-        };
+        // A guest: kept in memory only, never written to the database.
+        const token = randomBytes(32).toString('base64url'), s = workspace(text(input.name, 'Name or alias', 50, 1));
         sessions.set(token, s);
         return json(res, 201, { token, session: publicSession(s) });
+      }
+      if (path.startsWith('/api/auth/')) {
+        requireThat(store, 'Saved accounts are not set up on this server. Use "Try without saving".', 503);
+        if (method === 'GET' && path === '/api/auth/me') {
+          const user = currentUser(req);
+          return json(res, 200, user ? signedIn(user, openWorkspace(user)) : { user: null });
+        }
+        requireThat(method === 'POST', 'Not found.', 404);
+        const input = await body(req), address = `ip:${req.socket.remoteAddress || 'local'}`;
+        if (path === '/api/auth/signup') {
+          requireThat(input.consent === true, 'Confirm the privacy notice first.');
+          const email = checkEmail(input.email), name = text(input.name, 'Name or alias', 50, 1);
+          checkPassword(input.password, email);
+          throttle.check(`${address}:signup`);
+          const user = store.createUser({ email, passwordHash: await hashPassword(input.password), consentVersion: AUTH.consentVersion });
+          if (!user) {
+            throttle.fail(`${address}:signup`);
+            throw new AppError(409, 'Could not create an account with these details. If you already have one, log in instead.');
+          }
+          signIn(res, user);
+          return json(res, 201, signedIn(user, openWorkspace(user, name)));
+        }
+        if (path === '/api/auth/login') {
+          const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
+          throttle.check(`email:${email}`);
+          const user = email ? store.findUserByEmail(email) : null;
+          // Same message and similar timing whether the email is unknown or the password is wrong.
+          const valid = await verifyPassword(input.password, user?.passwordHash);
+          if (!user || !valid) { throttle.fail(`email:${email}`); throw new AppError(401, 'Email or password is incorrect.'); }
+          throttle.succeed(`email:${email}`);
+          signIn(res, user);
+          return json(res, 200, signedIn(user, openWorkspace(user)));
+        }
+        if (path === '/api/auth/logout') {
+          const id = readCookie(req.headers.cookie), record = id && store.findSession(hashToken(id));
+          if (record) { store.deleteSession(hashToken(id)); dropWorkspace(accounts.get(record.userId)); }
+          res.setHeader('Set-Cookie', sessionCookie('', { clear: true }));
+          return json(res, 200, { ok: true });
+        }
+        throw new AppError(404, 'Not found.');
       }
       const token = (req.headers.authorization || '').replace(/^Bearer /, '');
       const s = sessions.get(token);
       requireThat(s, 'Session missing or expired. Start a new one.', 401);
+      // A saved twin answers only to its own login, not to the working token alone.
+      if (s.userId) requireThat(currentUser(req)?.id === s.userId, 'Your login has expired. Log in again.', 401);
       s.touched = Date.now();
+      // Saved after every change, once the response (including a streamed reply) is complete.
+      if (s.userId && method === 'POST') res.once('finish', () => persist(s));
       if (method === 'DELETE' && path === '/api/session') {
-        s.controller?.abort(); s.speechController?.abort(); sessions.delete(token);
+        dropWorkspace(token);
         return json(res, 200, { ok: true });
       }
       if (method === 'GET' && path === '/api/session') return json(res, 200, publicSession(s));
@@ -435,7 +555,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech())
   });
   server.requestTimeout = 15000;
   server.on('close', () => {
-    clearInterval(timer);
+    clearInterval(timer); clearInterval(purgeTimer);
     for (const s of sessions.values()) s.controller?.abort();
     sessions.clear();
   });

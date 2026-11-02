@@ -9,7 +9,11 @@
 </head>
 <body>
 <header><strong>FUTURE SELF <span>/ Tatoma prototype</span></strong>
-  <button id="reset" class="secondary" hidden>Reset and forget session</button></header>
+  <div class="header-actions">
+    <span id="account-bar" hidden>Signed in as <span id="account-email"></span></span>
+    <button id="logout" class="secondary" hidden>Log out</button>
+    <button id="reset" class="secondary" hidden>Reset and forget session</button>
+  </div></header>
 <main>
   <p class="eyebrow">A possible future. Still your way of working.</p>
   <p id="health" class="muted">Checking Claude access…</p>
@@ -33,6 +37,36 @@
     <p>A short conversation, a few recognisable details, and a future self you can disagree with.</p>
     <p>This is an AI-generated simulation, not a prediction or a complete copy of you.
       Use fictional or appropriately anonymised material. Do not paste confidential information.</p>
+    <!-- Shown only when this server has saved accounts set up. -->
+    <div id="account-entry" class="account-entry" hidden>
+      <h2>Continue your twin</h2>
+      <form id="login-form">
+        <label>Email <input id="login-email" type="email" maxlength="254" required autocomplete="username"></label>
+        <label>Password <input id="login-password" type="password" maxlength="128" required autocomplete="current-password"></label>
+        <button>Log in</button>
+        <button id="show-signup" type="button" class="secondary">Create an account</button>
+      </form>
+      <form id="signup-form" hidden>
+        <label>Name or alias <input id="signup-name" maxlength="50" required autocomplete="nickname"></label>
+        <label>Email <input id="signup-email" type="email" maxlength="254" required autocomplete="username"></label>
+        <label>Password (at least 12 characters; a short sentence works well)
+          <input id="signup-password" type="password" minlength="12" maxlength="128" required autocomplete="new-password"></label>
+        <div class="privacy-notice">
+          <p><strong>What an account saves.</strong> Your confirmed profile, top problems, conversations and reflection,
+            encrypted on the computer running this app, so you can come back later. An unfinished interview is kept
+            until you confirm your profile, then the raw answers are deleted. Pasted work samples and voice recordings
+            are never saved.</p>
+          <p>Your answers are processed by Anthropic (Claude, United States) and, in voice mode, by Mistral (EU).
+            A Tatoma admin can see your email and account dates, never your content. Accounts unused for 6 months
+            are deleted. You can export or delete your data at any time.</p>
+        </div>
+        <label class="check"><input id="signup-consent" type="checkbox" required>
+          I agree to this and to the prototype notice below.</label>
+        <button>Create account</button>
+        <button id="show-login" type="button" class="secondary">I already have an account</button>
+      </form>
+      <h2>Or try without saving</h2>
+    </div>
     <form id="welcome-form">
       <label>Name or alias <input id="name" maxlength="50" required autocomplete="off"></label>
       <label class="check"><input id="consent" type="checkbox" required>
@@ -41,9 +75,9 @@
         I will use fictional, non-confidential material while this version is being tested.
         Reset clears this application's session, not any provider-side records.
         Inactive application sessions expire after about 30 minutes.</label>
-      <button>Start the experience</button>
+      <button id="start-guest">Start the experience</button>
     </form>
-    <p class="muted">English, text-first prototype. No login. Refreshing starts a new browser session.</p>
+    <p id="welcome-note" class="muted">English, text-first prototype. No login. Refreshing starts a new browser session.</p>
   </section>
 
   <!-- Shared voice settings; the app moves this into the interview or conversation panel. -->

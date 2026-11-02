@@ -20,6 +20,10 @@ button { border: 1px solid #244f3e; border-radius: 9px; background: #244f3e; col
 button.secondary { background: white; color: #244f3e; }
 button:disabled { opacity: .55; cursor: wait; }
 :focus-visible { outline: 3px solid #bf762c; outline-offset: 3px; }
+.header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#account-bar { font-size: .9rem; color: #56636b; }
+.account-entry form { margin-bottom: 8px; }
+.privacy-notice { font-size: .9rem; background: #f5f7f3; border: 1px solid #dde2dc; border-radius: 10px; padding: 4px 16px; }
 .actions { display: flex; flex-wrap: wrap; margin: 16px 0; gap: 4px; }
 .thread { clear: both; display: flex; flex-direction: column; gap: 15px; max-height: 440px; overflow-y: auto; margin: 22px 0; padding: 5px; }
 .bubble { max-width: 92%; border-radius: 15px; padding: 14px 18px; background: #eff3ee; align-self: flex-start; }

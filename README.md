@@ -106,6 +106,29 @@ npm.cmd run init:storage
 This adds a random `DATA_ENCRYPTION_KEY` to the external `secrets.env` (without printing it) and creates the
 private data folder, `%LOCALAPPDATA%\Tatoma\AI-Twin\data`. Running it again changes nothing.
 
+**Accounts** (increment 2) are switched on automatically once that key exists. Without it the app is guest-only,
+exactly as before.
+
+The welcome screen offers three choices:
+- **Log in.**
+- **Create an account:** name, email, a password of at least 12 characters, and consent to a short privacy notice. The consent version is recorded.
+- **Try without saving:** guest mode, kept in memory only.
+
+**Passwords and logins:**
+- Passwords are stored only as scrypt hashes (`lib/auth.mjs`).
+- A login is a random ID in an HttpOnly, SameSite=Strict cookie, stored as a hash. It lasts 12 hours, or ends after 30 minutes idle.
+- Login errors are identical for an unknown email and a wrong password. After 5 failures for one email, there is a 15-minute wait.
+
+**Saving and resuming:**
+- After every change, the account's working state is saved as one encrypted document. Pasted work samples are stripped first.
+- Logging in again, even after a server restart, continues where it was left.
+- A saved twin answers only to its own login cookie, not to the working token alone.
+- Log out replaces Reset for accounts.
+
+**Optional settings:**
+- `FUTURE_SELF_DB` moves the database file. Cloud-synced folders are refused.
+- `FUTURE_SELF_SECURE_COOKIES=1` adds `Secure` to the cookie once the app runs over HTTPS.
+
 ## Model-led interview — increment 2
 
 The fixed question list is removed. Claude asks the opening and contextual follow-ups while
