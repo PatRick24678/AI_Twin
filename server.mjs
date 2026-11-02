@@ -15,7 +15,8 @@ import { AnthropicModel } from './lib/anthropic-model.mjs';
 import { createSpeech, SPEECH_LIMITS, AUDIO_TYPES } from './lib/speech-model.mjs';
 import { generateSuggestions } from './lib/suggestions.mjs';
 import { createCryptoBox } from './lib/crypto-box.mjs';
-import { openStore } from './lib/store.mjs';
+import { openStore, RETENTION } from './lib/store.mjs';
+import { wordCount } from './lib/reply-style.mjs';
 import {
   AUTH, checkEmail, checkPassword, hashPassword, verifyPassword, newSessionId, hashToken, readCookie, sessionCookie, createThrottle
 } from './lib/auth.mjs';
@@ -88,6 +89,18 @@ export function savedDocument(s) {
   // Pasted work samples may be confidential company material: they stay in memory for this visit only.
   if (document.sample) document.sample.text = '';
   if (document.profileDraft?.sample) document.profileDraft.sample.text = '';
+  if (document.profile) {
+    // Once the profile is confirmed, the raw interview is no longer needed: keep the profile (with its short
+    // evidence quotes), the open-question list and the answer word counts for reply pacing, not the answers.
+    document.answerWordCounts = s.answerWordCounts || (s.answers || []).map(wordCount);
+    document.answers = []; document.intake = [];
+    const { interview, profileDraft } = document;
+    if (interview) Object.assign(interview, { messages: [], questions: [], observations: [], problems: [], problemDiscards: [],
+      activeQuestion: null, pendingInput: null, topics: Object.fromEntries(Object.entries(interview.topics || {})
+        .map(([id, topic]) => [id, { ...topic, boundaryEvidence: null }])) });
+    if (profileDraft) Object.assign(profileDraft, { entries: [], problems: [], retired: [], pendingAnswer: null,
+      questions: profileDraft.questions.map(({ id, topic, question, status, relatedIds }) => ({ id, topic, question, status, relatedIds })) });
+  }
   return document;
 }
 const DAY = 24 * 60 * 60 * 1000;
@@ -107,9 +120,18 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
     }
   }
   const timer = setInterval(sweep, 60000).unref();
-  // Storage limitation: inactive accounts and expired logins are removed at start-up and daily.
-  store?.purge();
-  const purgeTimer = store ? setInterval(() => store.purge(), DAY).unref() : null;
+  // Storage limitation, at start-up and daily: inactive accounts, expired logins, old audit entries, and
+  // interviews left unfinished for 30 days (the account stays; its twin starts again).
+  function purge() {
+    store.purge();
+    for (const userId of store.staleTwins(RETENTION.unfinishedDays)) {
+      if (accounts.has(userId)) continue;
+      try { if (!store.loadTwin(userId)?.profile) { store.deleteTwin(userId); store.audit(null, 'unfinished_twin_deleted', userId); } }
+      catch { store.deleteTwin(userId); } // Unreadable (e.g. a lost key): nothing recoverable to keep.
+    }
+  }
+  if (store) purge();
+  const purgeTimer = store ? setInterval(purge, DAY).unref() : null;
   function workspace(name, userId = null) {
     return {
       name, userId, stage: 'intake', answers: [], intake: [], interview: createInterview(),
@@ -327,6 +349,34 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
         if (path === '/api/auth/logout') {
           const id = readCookie(req.headers.cookie), record = id && store.findSession(hashToken(id));
           if (record) { store.deleteSession(hashToken(id)); dropWorkspace(accounts.get(record.userId)); }
+          res.setHeader('Set-Cookie', sessionCookie('', { clear: true }));
+          return json(res, 200, { ok: true });
+        }
+        throw new AppError(404, 'Not found.');
+      }
+      if (path.startsWith('/api/account')) {
+        requireThat(store, 'Saved accounts are not set up on this server.', 503);
+        const user = currentUser(req);
+        requireThat(user, 'Log in first.', 401);
+        // Right of access: the account details and everything saved for the twin, as JSON.
+        if (method === 'GET' && path === '/api/account/export') {
+          const token = accounts.get(user.id), live = token && sessions.get(token);
+          store.audit(user.id, 'data_exported', user.id);
+          return json(res, 200, { exportedAt: new Date().toISOString(), label: 'Your saved Future Self data (AI-generated simulation, not a prediction)',
+            account: { email: user.email, createdAt: new Date(user.createdAt).toISOString(), consentVersion: user.consentVersion },
+            twin: live ? savedDocument(live) : store.loadTwin(user.id) });
+        }
+        // Right to erasure: confirmed with the password, then the account, logins and twin are deleted together.
+        if (method === 'POST' && path === '/api/account/delete') {
+          const input = await body(req);
+          throttle.check(`email:${user.email}`);
+          if (!await verifyPassword(input.password, user.passwordHash)) {
+            throttle.fail(`email:${user.email}`);
+            throw new AppError(403, 'That password is not correct.');
+          }
+          const token = accounts.get(user.id);
+          if (token) { const s = sessions.get(token); s?.controller?.abort(); s?.speechController?.abort(); sessions.delete(token); accounts.delete(user.id); }
+          store.deleteUser(user.id);
           res.setHeader('Set-Cookie', sessionCookie('', { clear: true }));
           return json(res, 200, { ok: true });
         }

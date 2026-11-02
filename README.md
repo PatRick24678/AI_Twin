@@ -125,6 +125,13 @@ The welcome screen offers three choices:
 - A saved twin answers only to its own login cookie, not to the working token alone.
 - Log out replaces Reset for accounts.
 
+**Privacy controls** (increment 3):
+- **After profile confirmation:** the saved twin no longer contains the raw interview. Answers, transcript, questions, working notes and draft entries are removed. What remains is the confirmed profile with its short evidence quotes, the list of open questions, and the answer word counts used for reply pacing.
+- **Unfinished interviews:** an interview left unfinished for 30 days is deleted at start-up or by the daily purge. The account stays.
+- **Export my data:** downloads the account details and the saved twin as JSON.
+- **Delete account:** asks for the password (throttled like login), then deletes the account, its logins and its twin.
+- **Audit log:** records exports and deletions without content.
+
 **Optional settings:**
 - `FUTURE_SELF_DB` moves the database file. Cloud-synced folders are refused.
 - `FUTURE_SELF_SECURE_COOKIES=1` adds `Secure` to the cookie once the app runs over HTTPS.

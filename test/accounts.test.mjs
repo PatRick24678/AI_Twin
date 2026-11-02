@@ -13,7 +13,11 @@ import { withInterviewFixture } from '../test-support/interview-fixture.mjs';
 // Temporary databases, generated keys and fictional accounts only. No model or provider is contacted.
 const box = createCryptoBox(newDataKey());
 const PASSWORD = 'a fictional long passphrase';
-const base = { name: 'ACCOUNTS-TEST-ONLY', health: async () => ({ ok: true }), chat: async () => { throw new Error('unused'); } };
+// Interview turns come from the fixture; the profile audit asks no clarification; nothing else is called.
+const base = { name: 'ACCOUNTS-TEST-ONLY', health: async () => ({ ok: true }), chat: async (messages, { schema } = {}) => {
+  if (schema?.properties?.sampleNotes) return { text: JSON.stringify({ sampleNotes: [], clarifications: [] }), metrics: {} };
+  throw new Error('unused');
+} };
 
 function database(t) {
   const folder = mkdtempSync(join(tmpdir(), 'future-self-accounts-'));
@@ -125,4 +129,71 @@ test('guests are never stored, pasted samples never are, and without a key accou
   const off = await start(t, null);
   assert.equal((await off.call('/api/info')).body.accounts, false);
   assert.equal((await off.call('/api/auth/me')).status, 503);
+});
+
+// An account's interview, answered and then skipped to the end, then a confirmed profile.
+async function confirmedTwin(call, token, start) {
+  let state = await call('/api/interview/next', { body: { requestId: start.interview.requestId }, token });
+  for (const text of ['I coordinate projects for a fictional agency.', 'Approvals take weeks.']) {
+    state = await call('/api/answer', { body: { questionId: state.body.interview.questionId, text }, token });
+  }
+  while (state.body.interview.status === 'waiting') state = await call('/api/answer', { body: { questionId: state.body.interview.questionId, kind: 'skip' }, token });
+  await call('/api/interview/continue', { body: {}, token });
+  const review = (await call('/api/sample', { body: { text: 'A CONFIDENTIAL CLIENT EMAIL', context: 'Email', authored: true, typical: true, style: 'none' }, token })).body;
+  return call('/api/profile', { body: { profileVersion: review.profileVersion, draftId: review.profileDraft.id, acknowledged: true,
+    entries: review.profileDraft.entries.filter(e => e.included).map(({ id, topic, text, scope }) => ({ id, topic, text, scope })),
+    problems: review.profileDraft.problems.map(({ id, title, detail }) => ({ id, title, detail })) }, token });
+}
+
+test('once the profile is confirmed, the raw interview is no longer saved; quotes stay with the profile', async t => {
+  const store = openStore({ path: ':memory:', box }), { call } = await start(t, store);
+  const made = await signup(call);
+  const unfinished = store.loadTwin(store.findUserByEmail('alex@example.test').id);
+  assert.equal(unfinished.interview.status, 'thinking'); // Before confirmation the interview is kept to resume it.
+  const confirmed = await confirmedTwin(call, made.body.token, made.body.session);
+  assert.equal(confirmed.status, 200);
+  const saved = store.loadTwin(store.findUserByEmail('alex@example.test').id), text = JSON.stringify(saved);
+  assert.deepEqual([saved.answers, saved.intake, saved.interview.messages, saved.interview.observations, saved.profileDraft.entries], [[], [], [], [], []]);
+  assert.ok(!text.includes('Fictional test question')); // The interviewer's questions are gone too.
+  assert.ok(!text.includes('CONFIDENTIAL'));
+  assert.deepEqual(saved.answerWordCounts, [7, 3]);
+  assert.ok(saved.profile.entries.some(entry => entry.evidence.some(source => source.quote === 'Approvals take weeks.')));
+  assert.equal(saved.profile.problems[0].title, 'Approvals take weeks.');
+});
+
+test('participants can export their data and delete their account with their password', async t => {
+  const store = openStore({ path: ':memory:', box }), { call, forget } = await start(t, store);
+  const made = await signup(call);
+  const exported = await call('/api/account/export');
+  assert.equal(exported.body.account.email, 'alex@example.test');
+  assert.equal(exported.body.twin.name, 'Alex');
+  assert.ok(!JSON.stringify(exported.body).includes('passwordHash'));
+  assert.equal((await call('/api/account/delete', { body: { password: 'not my passphrase at all' } })).status, 403);
+  const gone = await call('/api/account/delete', { body: { password: PASSWORD } });
+  assert.equal(gone.status, 200); assert.match(gone.setCookie, /Max-Age=0/);
+  assert.equal(store.findUserByEmail('alex@example.test'), undefined);
+  assert.equal((await call('/api/session', { token: made.body.token })).status, 401);
+  forget();
+  assert.equal((await call('/api/account/export')).status, 401);
+  assert.equal((await call('/api/auth/login', { body: { email: 'alex@example.test', password: PASSWORD } })).status, 401);
+  assert.deepEqual(store.listAudit().map(entry => entry.action), ['account_created', 'data_exported', 'account_deleted']);
+});
+
+test('an interview left unfinished for 30 days is removed at start-up; confirmed twins and accounts stay', async t => {
+  const path = database(t), old = Date.now() - 31 * 24 * 60 * 60 * 1000;
+  let store = openStore({ path, box, now: () => old }), app = await start(t, store);
+  await signup(app.call, 'unfinished@example.test');
+  await app.stop(); store.close();
+  store = openStore({ path, box });
+  const unfinished = store.findUserByEmail('unfinished@example.test');
+  store.saveTwin(store.createUser({ email: 'done@example.test', passwordHash: 'x', consentVersion: 'test' }).id, { profile: { entries: [] } });
+  store.close();
+  // Back-date the confirmed twin as well: only its content decides whether it stays.
+  const { DatabaseSync } = await import('node:sqlite');
+  const raw = new DatabaseSync(path); raw.prepare('UPDATE twins SET updated_at = ?').run(old); raw.close();
+  store = openStore({ path, box }); app = await start(t, store);
+  assert.equal(store.loadTwin(unfinished.id), null);
+  assert.ok(store.findUserByEmail('unfinished@example.test'));
+  assert.deepEqual(store.loadTwin(store.findUserByEmail('done@example.test').id), { profile: { entries: [] } });
+  await app.stop(); store.close();
 });

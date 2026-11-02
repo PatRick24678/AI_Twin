@@ -16,7 +16,7 @@ async function api(path, data, signal, method = 'POST', auth = token) {
   const result = await response.json();
   signal?.throwIfAborted();
   // A saved twin needs a valid login: when it has lapsed, go back to the log-in screen.
-  if (response.status === 401 && user && auth === token) { user = null; token = ''; session = null; localStage = ''; activeProblem = ''; }
+  if (response.status === 401 && user && auth === token) signedOut();
   if (!response.ok) {
     if (result.session && auth === token) session = result.session;
     throw new Error(result.error || 'The request failed.');
@@ -476,7 +476,7 @@ function render() {
   const stage = localStage || session?.stage || 'welcome';
   stages.forEach(id => { $(id).hidden = id !== stage; });
   $('reset').hidden = !session || Boolean(user);
-  $('account-bar').hidden = $('logout').hidden = !user;
+  $('account-bar').hidden = $('logout').hidden = $('export-account').hidden = $('delete-account').hidden = !user;
   $('account-email').textContent = user?.email || '';
   $('account-entry').hidden = !accountsEnabled;
   $('start-guest').textContent = accountsEnabled ? 'Try without saving' : 'Start the experience';
@@ -872,6 +872,16 @@ $('reflection-form').onsubmit = event => {
     localStage = ''; render();
   });
 };
+// Forgets the account in this page; the next render shows the welcome screen.
+function signedOut(notice = '') {
+  user = null; token = ''; session = null; localStage = ''; activeProblem = ''; reviewKey = ''; pending = '';
+  $('account-notice').textContent = notice; $('account-notice').hidden = !notice;
+}
+function download(name, value) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a'); link.href = url; link.download = name;
+  link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 // Clears the page, not the server: used by Reset (guests) and Log out (accounts).
 function clearView() {
   stopVoice(); voice.spoken = '';
@@ -885,7 +895,7 @@ function clearView() {
 }
 // After logging in or signing up: continue where the twin was left, starting the interview if needed.
 async function enterAccount(result, signal) {
-  user = result.user; token = result.token; session = result.session; localStage = ''; render();
+  user = result.user; token = result.token; session = result.session; localStage = ''; $('account-notice').hidden = true; render();
   if (session.stage === 'intake' && session.interview.status === 'thinking') {
     await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
   }
@@ -909,6 +919,22 @@ $('signup-form').onsubmit = event => {
     await enterAccount(result, signal);
   });
 };
+// Right of access: everything saved for this account, downloaded as JSON.
+const exportAccount = () => run(async signal => {
+  download(`future-self-data-${Date.now()}.json`, await api('/api/account/export', undefined, signal, 'GET', ''));
+});
+$('export-account').onclick = exportAccount;
+$('delete-account').onclick = () => { $('delete-password').value = ''; $('delete-dialog').showModal(); };
+$('cancel-delete').onclick = () => $('delete-dialog').close();
+$('delete-form').onsubmit = event => {
+  event.preventDefault();
+  const password = $('delete-password').value;
+  $('delete-password').value = ''; $('delete-dialog').close();
+  run(async signal => {
+    await api('/api/account/delete', { password }, signal, 'POST', '');
+    stopVoice(); signedOut('Your account and saved twin have been deleted.');
+  });
+};
 $('logout').onclick = async () => {
   clearView(); user = null; errorMessage(); render(); busy();
   try { await api('/api/auth/logout', {}, undefined, 'POST', ''); }
@@ -921,6 +947,7 @@ $('reset').onclick = async () => {
   catch { errorMessage('Browser view cleared. Server deletion could not be confirmed; the old session expires after inactivity.'); }
 };
 $('export').onclick = () => {
+  if (user) return exportAccount();
   if (!confirm('These notes contain your confirmed profile, its evidence quotations and conversation. Save them on this computer?')) return;
   const notes = { exportedAt: new Date().toISOString(), label: 'AI-generated simulation, not a prediction',
     profile: session.profile, facts: session.facts, conversation: session.messages, problemSessions: session.problemThreads,
