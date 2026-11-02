@@ -139,15 +139,22 @@ test('unresolved answers do not create facts; a bare yes cannot create a replace
   let draft = draftWithQuestion(); draft = answerProfileQuestion(draft, { questionId: draft.questions[0].id, text: 'yes' });
   const undecided = applyProfileAnswer(draft, { resolved: false, decisions: [], additions: [] });
   assert.equal(undecided.questions[0].status, 'unresolved'); assert.equal(undecided.entries[1].included, false);
-  assert.throws(() => applyProfileAnswer(draft, { resolved: true, additions: [], decisions: [{ entryId: draft.entries[1].id,
-    action: 'replace', text: 'Runs an eight-person team.', scope: '', quote: 'yes' }] }), /informative/);
+  // A bare "yes" cannot rewrite a statement: that decision is set aside and the entry stays unresolved and excluded.
+  const yes = applyProfileAnswer(draft, { resolved: true, additions: [], decisions: [{ entryId: draft.entries[1].id,
+    action: 'replace', text: 'Runs an eight-person team.', scope: '', quote: 'yes' }] });
+  assert.equal(yes.entries[1].text, draft.entries[1].text); assert.equal(yes.entries[1].included, false);
+  assert.equal(yes.questions[0].status, 'unresolved'); assert.match(yes.ignored[0], /informative/);
 });
 test('clarifications cannot modify unrelated entries, fabricate evidence or smuggle extra fields', () => {
   let draft = draftWithQuestion(); draft = answerProfileQuestion(draft, { questionId: draft.questions[0].id, text: 'Keep it as described.' });
-  const value = { resolved: true, additions: [], decisions: [{ entryId: draft.entries[0].id, action: 'keep', text: '', scope: '', quote: 'Keep it as described.' }] };
-  assert.throws(() => applyProfileAnswer(draft, value), /affected/);
-  value.decisions[0].entryId = draft.entries[1].id; value.decisions[0].quote = 'Not said';
-  assert.throws(() => applyProfileAnswer(draft, value), /exact quote/);
+  // Invalid parts are set aside rather than failing the step; they never change the profile.
+  const value = { resolved: true, additions: [], decisions: [{ entryId: draft.entries[0].id, action: 'remove', text: '', scope: '', quote: 'Keep it as described.' }] };
+  let result = applyProfileAnswer(draft, value);
+  assert.deepEqual(result.entries[0], draft.entries[0]); assert.match(result.ignored[0], /outside this question/);
+  value.decisions[0] = { entryId: draft.entries[1].id, action: 'keep', text: '', scope: '', quote: 'Not said' };
+  result = applyProfileAnswer(draft, value);
+  assert.equal(result.entries[1].included, false); assert.equal(result.entries[1].evidence.length, draft.entries[1].evidence.length);
+  assert.match(result.ignored[0], /exact quote/); assert.equal(result.questions[0].status, 'unresolved');
   value.secret = 'not accepted'; assert.throws(() => applyProfileAnswer(draft, value), /unexpected/);
 });
 test('a failed/abandoned clarification falls back visibly, without confirming its answer', () => {

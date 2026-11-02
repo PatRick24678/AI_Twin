@@ -258,6 +258,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       requireThat(s.profileDraft === pending && pending.requestId === requestId,
         'The profile changed while processing this response.', 409);
       s.profileDraft = result.draft; s.metrics = result.metrics;
+      // Rule text only: parts of the model's reading that were not applied.
+      if (result.draft.ignored?.length) console.warn(`Profile answer parts set aside: ${result.draft.ignored.join(' | ')}`);
       syncProfile(s); json(res, 200, publicSession(s));
     } catch (error) {
       if (res.destroyed) return;
@@ -265,6 +267,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
         if (!res.writableEnded) json(res, 409, { error: 'The profile request was cancelled.' });
         return;
       }
+      if (error.reasons?.length) console.warn(`Profile response rejected: ${error.reasons.join(' | ')}`);
       syncProfile(s);
       if (error.status === 413) s.profileRetryAllowed = false;
       json(res, error instanceof AppError ? error.status : 502, {
