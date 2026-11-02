@@ -658,7 +658,11 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT || 3000);
   requireThat(Number.isInteger(port) && port >= 1024 && port <= 65535, 'Invalid PORT.');
-  const server = createApp();
-  server.listen(port, '127.0.0.1', () => console.log(`Future Self: http://127.0.0.1:${port}`));
+  const store = createStore(), server = createApp(undefined, undefined, store);
+  server.listen(port, '127.0.0.1', () => {
+    console.log(`Future Self: http://127.0.0.1:${port}`);
+    console.log(store ? `Saved accounts: on (database: ${store.path})`
+      : 'Saved accounts: off (guest only). Run npm.cmd run init:storage, then restart.');
+  });
   server.on('error', error => { console.error(error.message); process.exitCode = 1; });
 }
