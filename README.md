@@ -85,6 +85,27 @@ Live transcription is on by default when voice is configured. It uses Mistral's 
 - The page's CSP allows `wss://api.mistral.ai`, only when live transcription is configured.
 - Realtime is billed per audio minute, roughly twice the batch price. Check the current rate and retention on Mistral's pricing page.
 
+## Saved twins: storage foundation
+
+Accounts and saved twins are being added in increments; see `PRIVACY.md` for what is stored and why.
+
+**Storage layer** (increment 1, not yet wired into the app):
+- Node's built-in SQLite (`node:sqlite`, Node ≥ 22.13). There are still no npm dependencies.
+- `lib/store.mjs` is the only module that touches the database. It covers:
+  - users, login sessions and one twin document per user;
+  - deletion that cascades;
+  - a retention purge (6 months inactive) and an audit log.
+- `lib/crypto-box.mjs` encrypts email addresses and twin content with AES-256-GCM. Each ciphertext is bound to its row.
+
+One-time setup:
+
+```powershell
+npm.cmd run init:storage
+```
+
+This adds a random `DATA_ENCRYPTION_KEY` to the external `secrets.env` (without printing it) and creates the
+private data folder, `%LOCALAPPDATA%\Tatoma\AI-Twin\data`. Running it again changes nothing.
+
 ## Model-led interview — increment 2
 
 The fixed question list is removed. Claude asks the opening and contextual follow-ups while
