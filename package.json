@@ -8,6 +8,7 @@
     "start": "node --env-file=.env --import=./lib/load-secrets.mjs server.mjs",
     "test": "node --test",
     "init:storage": "node scripts/init-storage.mjs",
+    "create-admin": "node --env-file=.env --import=./lib/load-secrets.mjs scripts/create-admin.mjs",
     "check:secrets": "node --import=./lib/load-secrets.mjs -e \"console.log('API key loaded; value hidden.')\""
   }
 }

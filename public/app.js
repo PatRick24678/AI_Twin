@@ -4,7 +4,7 @@ const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '', activeProblem = '';
 let user = null, accountsEnabled = false; // A signed-in account (saved twin), or null for a guest.
 let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180, problems: 5, problemTitle: 80, problemDetail: 240 };
-const stages = ['welcome', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done'];
+const stages = ['welcome', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done', 'admin'];
 function errorMessage(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 async function api(path, data, signal, method = 'POST', auth = token) {
   const response = await fetch(path, {
@@ -473,7 +473,7 @@ function renderVoice() {
 }
 
 function render() {
-  const stage = localStage || session?.stage || 'welcome';
+  const stage = localStage || session?.stage || (user?.role === 'admin' ? 'admin' : 'welcome');
   stages.forEach(id => { $(id).hidden = id !== stage; });
   $('reset').hidden = !session || Boolean(user);
   $('account-bar').hidden = $('logout').hidden = $('export-account').hidden = $('delete-account').hidden = !user;
@@ -896,12 +896,54 @@ function clearView() {
 // After logging in or signing up: continue where the twin was left, starting the interview if needed.
 async function enterAccount(result, signal) {
   user = result.user; token = result.token; session = result.session; localStage = ''; $('account-notice').hidden = true; render();
+  if (user.role === 'admin') return loadAdmin(signal);
   if (session.stage === 'intake' && session.interview.status === 'thinking') {
     await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
   }
 }
-$('show-signup').onclick = () => { $('login-form').hidden = true; $('signup-form').hidden = false; $('signup-name').focus(); };
-$('show-login').onclick = () => { $('signup-form').hidden = true; $('login-form').hidden = false; $('login-email').focus(); };
+// Admin page: account metadata and actions only. The server never sends content here.
+const when = value => value ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+function adminNotice(text) { $('admin-notice').textContent = text; $('admin-notice').hidden = !text; }
+async function loadAdmin(signal) {
+  const data = await api('/api/admin/accounts', undefined, signal, 'GET', '');
+  $('admin-accounts').tBodies[0].replaceChildren(...data.accounts.map(account => {
+    const row = document.createElement('tr'), cell = text => { const td = document.createElement('td'); td.textContent = text; row.append(td); return td; };
+    cell(account.email); cell(account.role); cell(when(account.createdAt)); cell(when(account.lastActiveAt)); cell(account.hasTwin ? 'Yes' : 'No');
+    const actions = cell('');
+    if (account.email !== user.email) {
+      const reset = document.createElement('button'); reset.className = 'secondary'; reset.textContent = 'Reset code';
+      reset.onclick = () => run(async signal => {
+        const result = await api('/api/admin/accounts/reset', { userId: account.id }, signal, 'POST', '');
+        adminNotice(`Reset code for ${account.email}: ${result.code} (valid until ${when(result.expiresAt)}). Give it to them in person; it is shown only once.`);
+      });
+      const remove = document.createElement('button'); remove.className = 'secondary'; remove.textContent = 'Delete';
+      remove.onclick = () => {
+        if (!confirm(`Delete ${account.email} and their saved twin? This cannot be undone.`)) return;
+        run(async signal => { await api('/api/admin/accounts/delete', { userId: account.id }, signal, 'POST', ''); adminNotice(`${account.email} was deleted.`); await loadAdmin(signal); });
+      };
+      actions.append(reset, remove);
+    }
+    return row;
+  }));
+  $('admin-audit').replaceChildren(...data.audit.map(entry => {
+    const item = document.createElement('li');
+    item.textContent = `${when(entry.at)} · ${entry.action.replaceAll('_', ' ')}${entry.targetId ? ` · account ${entry.targetId.slice(0, 8)}` : ''}`;
+    return item;
+  }));
+}
+const showForm = id => { for (const form of ['login-form', 'signup-form', 'reset-form']) $(form).hidden = form !== id; };
+$('show-reset').onclick = () => { showForm('reset-form'); $('reset-email').value = $('login-email').value; $('reset-code').focus(); };
+$('reset-back').onclick = () => showForm('login-form');
+$('reset-form').onsubmit = event => {
+  event.preventDefault();
+  run(async signal => {
+    const result = await api('/api/auth/reset', { email: $('reset-email').value, code: $('reset-code').value, password: $('reset-password').value }, signal);
+    $('reset-password').value = ''; $('reset-code').value = ''; showForm('login-form');
+    await enterAccount(result, signal);
+  });
+};
+$('show-signup').onclick = () => { showForm('signup-form'); $('signup-name').focus(); };
+$('show-login').onclick = () => { showForm('login-form'); $('login-email').focus(); };
 $('login-form').onsubmit = event => {
   event.preventDefault();
   run(async signal => {

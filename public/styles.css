@@ -23,6 +23,10 @@ button:disabled { opacity: .55; cursor: wait; }
 .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 #account-bar { font-size: .9rem; color: #56636b; }
 #delete-dialog { max-width: 520px; }
+.table-wrap { overflow-x: auto; }
+#admin-accounts { width: 100%; border-collapse: collapse; font-size: .9rem; }
+#admin-accounts th, #admin-accounts td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #e0e1db; vertical-align: middle; }
+#admin-accounts button { padding: 6px 10px; }
 #delete-dialog::backdrop { background: #1d283266; }
 .account-entry form { margin-bottom: 8px; }
 .privacy-notice { font-size: .9rem; background: #f5f7f3; border: 1px solid #dde2dc; border-radius: 10px; padding: 4px 16px; }

@@ -132,6 +132,22 @@ The welcome screen offers three choices:
 - **Delete account:** asks for the password (throttled like login), then deletes the account, its logins and its twin.
 - **Audit log:** records exports and deletions without content.
 
+**Admins** (increment 4). Create the first admin from the terminal; it can't be done through the website:
+
+```powershell
+npm.cmd run create-admin
+```
+
+- The password is typed without being shown.
+- An admin logs in on the normal welcome screen and gets the **Accounts** page instead of a twin.
+- The page lists each account's email, role, created date, last active date and whether a twin is saved, plus recent account activity from the audit log.
+- **Admins never receive profiles, interviews or conversations**, and the server never sends them.
+
+What an admin can do:
+- **Delete an account**, but not their own.
+- **Issue a one-time reset code**: valid for 30 minutes, shown once, stored only as a hash, never logged. The participant enters it under "Forgot your password?" with a new password, which also ends their other logins.
+- In the hosted version, reset emails replace this.
+
 **Optional settings:**
 - `FUTURE_SELF_DB` moves the database file. Cloud-synced folders are refused.
 - `FUTURE_SELF_SECURE_COOKIES=1` adds `Secure` to the cookie once the app runs over HTTPS.

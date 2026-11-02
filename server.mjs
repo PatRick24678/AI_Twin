@@ -18,7 +18,8 @@ import { createCryptoBox } from './lib/crypto-box.mjs';
 import { openStore, RETENTION } from './lib/store.mjs';
 import { wordCount } from './lib/reply-style.mjs';
 import {
-  AUTH, checkEmail, checkPassword, hashPassword, verifyPassword, newSessionId, hashToken, readCookie, sessionCookie, createThrottle
+  AUTH, checkEmail, checkPassword, hashPassword, verifyPassword, newSessionId, hashToken, readCookie, sessionCookie, createThrottle,
+  newResetCode, sameCode
 } from './lib/auth.mjs';
 import { createInterview, recordInterviewInput } from './lib/interview-state.mjs';
 import { InterviewError, INTERVIEW_LIMITS } from './lib/interview-contract.mjs';
@@ -175,7 +176,9 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
     store.touchSession(idHash); store.touchUser(record.userId);
     return store.findUser(record.userId) || null;
   }
-  const signedIn = (user, token) => ({ user: { email: user.email, role: user.role }, token, session: publicSession(sessions.get(token)) });
+  // Admins manage accounts and have no twin of their own, so they get no working copy.
+  const signedIn = (user, token = user.role === 'admin' ? '' : openWorkspace(user)) =>
+    ({ user: { email: user.email, role: user.role }, token, session: token ? publicSession(sessions.get(token)) : null });
   function dropWorkspace(token) {
     const s = sessions.get(token);
     if (!s) return;
@@ -318,7 +321,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
         requireThat(store, 'Saved accounts are not set up on this server. Use "Try without saving".', 503);
         if (method === 'GET' && path === '/api/auth/me') {
           const user = currentUser(req);
-          return json(res, 200, user ? signedIn(user, openWorkspace(user)) : { user: null });
+          return json(res, 200, user ? signedIn(user) : { user: null });
         }
         requireThat(method === 'POST', 'Not found.', 404);
         const input = await body(req), address = `ip:${req.socket.remoteAddress || 'local'}`;
@@ -335,6 +338,21 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
           signIn(res, user);
           return json(res, 201, signedIn(user, openWorkspace(user, name)));
         }
+        // A one-time code from an admin replaces a forgotten password (no email service in the local phase).
+        if (path === '/api/auth/reset') {
+          const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
+          throttle.check(`email:${email}`);
+          const user = email ? store.findUserByEmail(email) : null;
+          const valid = Boolean(user?.resetHash) && user.resetExpires > Date.now() && sameCode(input.code, user.resetHash);
+          if (!valid) { throttle.fail(`email:${email}`); throw new AppError(401, 'That email and code do not match a valid reset code.'); }
+          checkPassword(input.password, email);
+          store.setPassword(user.id, await hashPassword(input.password)); // Also ends every existing login.
+          dropWorkspace(accounts.get(user.id));
+          store.audit(user.id, 'password_reset', user.id);
+          throttle.succeed(`email:${email}`);
+          signIn(res, user);
+          return json(res, 200, signedIn(user));
+        }
         if (path === '/api/auth/login') {
           const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
           throttle.check(`email:${email}`);
@@ -344,7 +362,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
           if (!user || !valid) { throttle.fail(`email:${email}`); throw new AppError(401, 'Email or password is incorrect.'); }
           throttle.succeed(`email:${email}`);
           signIn(res, user);
-          return json(res, 200, signedIn(user, openWorkspace(user)));
+          return json(res, 200, signedIn(user));
         }
         if (path === '/api/auth/logout') {
           const id = readCookie(req.headers.cookie), record = id && store.findSession(hashToken(id));
@@ -379,6 +397,32 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
           store.deleteUser(user.id);
           res.setHeader('Set-Cookie', sessionCookie('', { clear: true }));
           return json(res, 200, { ok: true });
+        }
+        throw new AppError(404, 'Not found.');
+      }
+      // Account management for Tatoma admins: metadata only, never profiles, interviews or conversations.
+      if (path.startsWith('/api/admin/')) {
+        requireThat(store, 'Saved accounts are not set up on this server.', 503);
+        const admin = currentUser(req);
+        requireThat(admin?.role === 'admin', 'Admins only.', 403);
+        if (method === 'GET' && path === '/api/admin/accounts') {
+          return json(res, 200, { accounts: store.listUsers(), audit: store.listAudit().slice(-50).reverse() });
+        }
+        requireThat(method === 'POST', 'Not found.', 404);
+        const input = await body(req), target = typeof input.userId === 'string' ? store.findUser(input.userId) : null;
+        requireThat(target, 'That account no longer exists.', 404);
+        requireThat(target.id !== admin.id, 'Use another admin account to change your own.', 409);
+        if (path === '/api/admin/accounts/delete') {
+          dropWorkspace(accounts.get(target.id));
+          store.deleteUser(target.id, admin.id);
+          return json(res, 200, { ok: true });
+        }
+        if (path === '/api/admin/accounts/reset') {
+          // Shown once to the admin, who hands it over in person; only its hash is stored.
+          const code = newResetCode(), expires = Date.now() + 30 * 60 * 1000;
+          store.setResetCode(target.id, hashToken(code), expires);
+          store.audit(admin.id, 'reset_code_issued', target.id);
+          return json(res, 200, { code, expiresAt: new Date(expires).toISOString() });
         }
         throw new AppError(404, 'Not found.');
       }

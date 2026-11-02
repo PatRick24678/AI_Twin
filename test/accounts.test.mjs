@@ -197,3 +197,42 @@ test('an interview left unfinished for 30 days is removed at start-up; confirmed
   assert.deepEqual(store.loadTwin(store.findUserByEmail('done@example.test').id), { profile: { entries: [] } });
   await app.stop(); store.close();
 });
+
+test('admins manage accounts without ever receiving content; reset codes are one-time and never logged', async t => {
+  const store = openStore({ path: ':memory:', box }), { call, forget } = await start(t, store);
+  store.createUser({ email: 'admin@example.test', passwordHash: await hashPassword(PASSWORD), role: 'admin', consentVersion: 'test' });
+  const alex = await signup(call);
+  let state = await call('/api/interview/next', { body: { requestId: alex.body.session.interview.requestId }, token: alex.body.token });
+  await call('/api/answer', { body: { questionId: state.body.interview.questionId, text: 'PRIVATE_DETAIL about my work' }, token: alex.body.token });
+  assert.equal((await call('/api/admin/accounts')).status, 403); // A participant is not an admin.
+  forget();
+  assert.equal((await call('/api/admin/accounts')).status, 403);
+  const admin = await call('/api/auth/login', { body: { email: 'admin@example.test', password: PASSWORD } });
+  assert.deepEqual([admin.body.user.role, admin.body.token, admin.body.session], ['admin', '', null]);
+  const list = await call('/api/admin/accounts');
+  assert.deepEqual(list.body.accounts.map(a => [a.email, a.role, a.hasTwin]), [['admin@example.test', 'admin', false], ['alex@example.test', 'participant', true]]);
+  assert.ok(!JSON.stringify(list.body).includes('PRIVATE_DETAIL'));
+  const alexId = list.body.accounts[1].id, adminId = list.body.accounts[0].id;
+  assert.equal((await call('/api/admin/accounts/delete', { body: { userId: adminId } })).status, 409);
+
+  const { code } = (await call('/api/admin/accounts/reset', { body: { userId: alexId } })).body;
+  assert.match(code, /^[A-Z2-9]{5}-[A-Z2-9]{5}$/);
+  forget();
+  const reset = body => call('/api/auth/reset', { body: { email: 'alex@example.test', password: 'a brand new passphrase', ...body } });
+  assert.equal((await reset({ code: 'WRONG-CODE1' })).status, 401);
+  const done = await reset({ code: code.toLowerCase().replace('-', ' ') });
+  assert.equal(done.status, 200); assert.equal(done.body.session.interview.turns, 1);
+  assert.equal((await call('/api/session', { token: alex.body.token })).status, 401); // The old working copy is closed.
+  forget();
+  assert.equal((await reset({ code })).status, 401); // One use only.
+  assert.equal((await call('/api/auth/login', { body: { email: 'alex@example.test', password: PASSWORD } })).status, 401);
+  assert.equal((await call('/api/auth/login', { body: { email: 'alex@example.test', password: 'a brand new passphrase' } })).status, 200);
+
+  forget();
+  await call('/api/auth/login', { body: { email: 'admin@example.test', password: PASSWORD } });
+  assert.equal((await call('/api/admin/accounts/delete', { body: { userId: alexId } })).status, 200);
+  assert.equal(store.findUserByEmail('alex@example.test'), undefined);
+  const audit = (await call('/api/admin/accounts')).body.audit;
+  assert.deepEqual(audit.slice(0, 3).map(entry => entry.action), ['account_deleted', 'password_reset', 'reset_code_issued']);
+  assert.ok(!JSON.stringify(store.listAudit()).includes(code) && !JSON.stringify(audit).includes('alex@'));
+});

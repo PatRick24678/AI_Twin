@@ -48,6 +48,16 @@
         <label>Password <input id="login-password" type="password" maxlength="128" required autocomplete="current-password"></label>
         <button>Log in</button>
         <button id="show-signup" type="button" class="secondary">Create an account</button>
+        <button id="show-reset" type="button" class="secondary">Forgot your password?</button>
+      </form>
+      <form id="reset-form" hidden>
+        <p class="muted">Ask a Tatoma admin for a one-time reset code. It is valid for 30 minutes.</p>
+        <label>Email <input id="reset-email" type="email" maxlength="254" required autocomplete="username"></label>
+        <label>Reset code <input id="reset-code" maxlength="20" required autocomplete="one-time-code"></label>
+        <label>New password (at least 12 characters)
+          <input id="reset-password" type="password" minlength="12" maxlength="128" required autocomplete="new-password"></label>
+        <button>Set new password</button>
+        <button id="reset-back" type="button" class="secondary">Back to log in</button>
       </form>
       <form id="signup-form" hidden>
         <label>Name or alias <input id="signup-name" maxlength="50" required autocomplete="nickname"></label>
@@ -257,6 +267,18 @@
       <textarea id="reflection-text" maxlength="1000" rows="5"></textarea></label>
       <button>Finish the session</button></form>
   </section>
+  <section id="admin" class="panel" hidden>
+    <p class="eyebrow">Tatoma admin</p>
+    <h2>Accounts</h2>
+    <p class="muted">Manage accounts here. Profiles, interviews and conversations are never shown to admins.</p>
+    <p id="admin-notice" class="profile-warning" role="status" hidden></p>
+    <div class="table-wrap"><table id="admin-accounts">
+      <thead><tr><th>Email</th><th>Role</th><th>Created</th><th>Last active</th><th>Saved twin</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <details><summary>Recent account activity</summary><ul id="admin-audit" class="muted"></ul></details>
+  </section>
+
   <section id="done" class="panel" hidden>
     <h2>One possible future, not a verdict.</h2>
     <p id="saved-reflection"></p>
