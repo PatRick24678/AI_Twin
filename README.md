@@ -85,6 +85,49 @@ Live transcription is on by default when voice is configured. It uses Mistral's 
 - The page's CSP allows `wss://api.mistral.ai`, only when live transcription is configured.
 - Realtime is billed per audio minute, roughly twice the batch price. Check the current rate and retention on Mistral's pricing page.
 
+## Optional face for the future self
+
+Before the interview starts, a new twin gets a "How do you look?" step: the participant describes how they look in a
+few words (at most 400 characters) and continues to the questions, or skips. The picture is drawn in the background
+while they answer, so it is ready when they meet their future self. In the conversation they can change, redraw or
+remove it, or draw one if they skipped or the drawing failed. It is off without an OpenAI key; the app then stays as it was.
+
+**How a face is made**
+1. `POST /api/portrait` sends only that description to OpenAI's image model (`gpt-image-2` by default,
+   `OPENAI_IMAGE_MODEL` in `.env`), together with the style board `assets/portrait-style.png`: four example heads from
+   the character sheets. The prompt asks for one head-and-shoulders portrait in that style, facing the viewer, with the
+   mouth closed and drawn as a single line. The profile and conversation are never sent.
+2. Claude looks at the finished picture once (one image block, `lib/portrait-model.mjs` → `locateFace`) and returns rough
+   boxes for both eyes and the mouth. Implausible answers fall back to the positions the prompt asks for.
+3. The picture (JPEG, about 150 KB) is kept with the twin: in memory for guests, encrypted in the saved twin for
+   accounts. The session JSON carries only its description and eye/mouth positions; the picture itself comes from
+   `GET /api/portrait`. `DELETE /api/portrait` removes it.
+
+**How it talks** (`public/talking-portrait.js`)
+- The browser draws the picture on a canvas and snaps Claude's boxes to the drawn lines: the darkest connected shape of
+  mouth size near the mouth box, the solid pupil inside each eye box (a glasses frame is hollow, so it is skipped).
+- Everyone shares the same nine mouth shapes. While the face is quiet, the picture's own mouth shows. While voice mode
+  reads a future-self reply, the drawn mouth is covered with the face's own skin colour and the shared shapes take over,
+  in the picture's outline colour and line thickness. The mouth follows `speechSynthesis` as in the earlier test bench:
+  shapes from the text, word boundary events for timing where the voice sends them, an estimate (learned per voice)
+  where it does not, and the end event to close the mouth.
+- It blinks every few seconds (only when both pupils were found) and sways gently; `prefers-reduced-motion` stops the sway.
+- The CSP is unchanged: the picture is an `ImageBitmap` on a canvas, the overlay is inline SVG, and styles are set
+  through the DOM.
+
+**Limits and cost**
+- At most 5 pictures per twin (`PORTRAIT_LIMITS.perTwin`); a picture counts once it has been drawn, and removing one does
+  not give it back. A refused or failed drawing does not count and keeps the current face.
+- One picture is one image request (roughly $0.05 at `medium` quality and 1024 × 1024; check OpenAI's current prices)
+  plus one small Claude request with an image. `OPENAI_IMAGE_QUALITY` can be `low`, `medium`, `high` or `auto`.
+- Drawing takes up to about a minute and runs next to the interview or conversation. The Claude look at the picture
+  waits for the Claude lock (up to a minute; interview turns wait a few seconds for it in turn) and otherwise uses the
+  default positions. Refreshing the page while the picture is being drawn cancels it; it can be drawn again later.
+- OpenAI's refusals (for example a description naming a real person) are shown as a plain message.
+  Each request carries a random per-twin `safety_identifier`, never a name or email.
+
+To enable it, add `OPENAI_API_KEY=...` to the same external `secrets.env` (or the host environment).
+
 ## Saved twins: storage foundation
 
 Accounts and saved twins are being added in increments; see `PRIVACY.md` for what is stored and why.
@@ -323,7 +366,7 @@ work samples, confirmed profile and recent conversation are sent to Anthropic. T
 cannot promise that resetting its session erases provider-side records. Confirm Tatoma's permitted
 data use and the provider settings before using real professional information.
 
-No account login, durable database, voice or avatar implementation is added by this commit.
+Character pictures (optional) send the participant's own description of how they look to OpenAI; see above.
 Sessions are still held in application memory and expire after about 30 minutes of inactivity.
 Keep this version private and bound to loopback. The single-generation lock remains deliberately
 in place for development. It is not a multi-user production deployment.

@@ -118,11 +118,29 @@
     <p id="voice-note" class="muted" hidden></p>
   </div>
 
+  <!-- Before the interview: how the participant looks, so their future self's face is drawn while they talk. -->
+  <section id="face-intro" class="panel" hidden>
+    <p class="eyebrow">Before we start</p>
+    <h2>How do you look?</h2>
+    <p>Your future self gets a face, drawn in a simple comic style from your own description. It is drawn while you
+      answer the questions, and it moves its mouth when voice mode reads its replies aloud.</p>
+    <form id="face-intro-form">
+      <label>Describe yourself in a few words
+        <textarea id="face-intro-description" maxlength="400" rows="3" required
+          placeholder="For example: late thirties, short curly dark brown hair, round glasses, light brown skin, usually wears a grey jumper"></textarea></label>
+      <p class="muted">Only this description is sent to OpenAI to draw the picture; your answers are not.
+        Do not name real people. The picture is kept with your twin and you can change or remove it later.</p>
+      <button>Continue to the questions</button>
+      <button id="face-intro-skip" type="button" class="secondary">Skip, no face for now</button>
+    </form>
+  </section>
+
   <section id="intake" class="panel" hidden>
     <p class="eyebrow">A conversation about your work</p>
     <h2>Let's get to know your workday.</h2>
     <p>I'm helping build your twin, not speaking as it yet. Brief answers are fine.
       Skip anything you do not want to discuss. You can also tell me when you want to stop.</p>
+    <p id="face-progress" class="muted" role="status" hidden></p>
     <div id="intake-thread" class="thread"></div>
     <form id="answer-form" hidden>
       <label>Your answer
@@ -244,6 +262,27 @@
     <div id="problem-focus" class="problem-focus" hidden>
       <div><p class="eyebrow">Working on</p><h3 id="problem-focus-title"></h3></div>
       <button id="leave-problem" class="secondary" type="button">Back to the conversation</button>
+    </div>
+    <!-- The future self's face: a picture drawn from the participant's own description, with shared mouth shapes on top. -->
+    <div id="face-area" class="face-area" hidden>
+      <div id="face" class="face" hidden>
+        <div class="face-stage"><canvas id="face-canvas" aria-label="Your future self"></canvas><svg id="face-overlay" aria-hidden="true"></svg></div>
+        <button id="face-change" type="button" class="secondary">Change the face</button>
+      </div>
+      <form id="face-form" class="face-form" hidden>
+        <h3>Give your future self a face</h3>
+        <p class="muted">Describe how you look, in a few words. Your future self is drawn in a simple comic style and
+          moves its mouth when voice mode reads its replies aloud.</p>
+        <label>How you look
+          <textarea id="face-description" maxlength="400" rows="3" required
+            placeholder="For example: late thirties, short curly dark brown hair, round glasses, light brown skin, usually wears a grey jumper"></textarea></label>
+        <p class="muted">Only this description is sent to OpenAI to draw the picture; your profile and conversation are not.
+          Do not name real people. The picture is saved with your twin and you can remove it at any time.
+          <span id="face-allowance"></span></p>
+        <button id="face-draw">Draw my future self</button>
+        <button id="face-cancel" type="button" class="secondary" hidden>Keep the current face</button>
+        <button id="face-remove" type="button" class="secondary" hidden>Remove the face</button>
+      </form>
     </div>
     <div id="twin-thread" class="thread"></div>
     <button id="open-scene">Meet my future self</button>

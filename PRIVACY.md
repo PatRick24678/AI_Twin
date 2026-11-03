@@ -26,6 +26,8 @@ a decision by Tatoma.
 | Twin and problem conversations | Personal; drafts may name third parties | Yes | While the account exists | Encrypted |
 | Pasted work sample | **High**: may be confidential company or client data | **No**, held in memory for one session | None | Never written to disk |
 | Voice audio | Biometric-adjacent | **No** | None | Streamed or sent once for transcription only |
+| Appearance description (for the face) | Personal; describes how the participant looks | Yes, with the picture | While the account exists, or until the face is removed | Encrypted |
+| Face picture (AI-drawn cartoon) | Personal; may resemble the participant | Yes | While the account exists, or until the face is removed | Encrypted; exportable; removable |
 | Reflection | Personal | Yes | While the account exists | Encrypted |
 | Consent record | Accountability | Yes | While the account exists | Version and timestamp |
 | Admin audit log | Accountability | Yes | 12 months | Who, what and when, never content |
@@ -47,12 +49,19 @@ a decision by Tatoma.
 ## Outside processors
 - **Anthropic** (Claude): interview, profile and twin generation. Processing happens in the US, under Anthropic's commercial terms and DPA. API data is not used for training. Consider zero data retention.
 - **Mistral** (Voxtral): speech-to-text in voice mode, EU. Inputs may be kept for up to 30 days for abuse monitoring unless zero data retention is approved. Still to request.
+- **OpenAI** (GPT Image): draws the optional face from the participant's description of how they look. Only that
+  description and the fixed style board are sent, never the profile or conversation. Processing is in the US under
+  OpenAI's API terms and DPA; API data is not used for training by default. OpenAI may keep API inputs and outputs for
+  up to 30 days for abuse monitoring unless zero data retention is approved. Still to request.
+- **Anthropic** also receives the drawn picture once, to locate the eyes and mouth for the animation.
 - The browser's own speech service may receive the text when an online read-aloud voice is chosen. The app says so next to the voice picker.
 
 ## Open before real participants
 - Choose a lawful basis (consent, or legitimate interest) and record it.
 - Run a DPIA: this is AI-supported profiling of people's work.
-- Check the DPAs with Anthropic and Mistral, and request ZDR.
+- Check the DPAs with Anthropic, Mistral and OpenAI, and request ZDR.
+- Decide whether a face that may resemble the participant needs its own consent line; the app currently shows a
+  notice next to the description field.
 - Add a privacy notice page.
 - Never give employers access to individual profiles without the participant's explicit, freely given consent.
 - Hosted version: EU hosting, HTTPS, backups that follow deletions, and an email service for verification and password reset.

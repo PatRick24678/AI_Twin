@@ -1,10 +1,11 @@
 import { createSilenceDetector } from '/voice-activity.js';
 import { LIVE, toPcm16, sessionUpdate, appendAudio, endAudio, liveStart, reduceLive } from '/live-transcript.js';
+import { createTalkingPortrait } from '/talking-portrait.js';
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '', activeProblem = '';
 let user = null, accountsEnabled = false; // A signed-in account (saved twin), or null for a guest.
 let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180, problems: 5, problemTitle: 80, problemDetail: 240 };
-const stages = ['welcome', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done', 'admin'];
+const stages = ['welcome', 'face-intro', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done', 'admin'];
 function errorMessage(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 async function api(path, data, signal, method = 'POST', auth = token) {
   const response = await fetch(path, {
@@ -44,6 +45,7 @@ function busy() {
   renderInterview();
   renderProfileProcess();
   updateProfileCount();
+  renderFace();
 
   if (!waiting) {
     $('loading-title').textContent = '';
@@ -148,6 +150,93 @@ function renderInterview() {
   renderVoice(); maybeSpeak();
 }
 
+// The future self's face: drawn once from the participant's description (server: /api/portrait), then animated here.
+const face = { available: false, limit: 5, player: null, loaded: 0, loading: 0, editing: false,
+  asked: false, drawing: false, problem: '' };
+// The face is described first, before the interview starts (once per new twin; skipping is fine).
+const needsFaceIntro = () => face.available && !face.asked && session && !session.portrait &&
+  session.stage === 'intake' && session.interview.status === 'thinking' && session.intake.length === 0;
+// After the description (or a skip): draw in the background and start the interview straight away.
+function leaveFaceIntro(description) {
+  face.asked = true; localStage = '';
+  if (description) drawInBackground(description);
+  render();
+  run(signal => interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal));
+}
+// Not part of run(): the drawing takes up to a minute and must not block the interview.
+async function drawInBackground(description) {
+  const forToken = token;
+  face.drawing = true; face.problem = ''; render();
+  try {
+    const response = await fetch('/api/portrait', { method: 'POST', body: JSON.stringify({ description }),
+      headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1', Authorization: `Bearer ${forToken}` } });
+    const result = await response.json();
+    if (token !== forToken || !session) return;
+    if (!response.ok) throw new Error(result.error || 'The picture could not be drawn.');
+    // Only the face fields: the interview may have moved on while the picture was being drawn.
+    session.portrait = result.portrait; session.portraitCount = result.portraitCount;
+  } catch (error) {
+    if (token === forToken) face.problem = `${error.message} You can draw it again when you meet your future self.`;
+  } finally {
+    if (token === forToken) { face.drawing = false; render(); }
+  }
+}
+$('face-intro-form').onsubmit = event => { event.preventDefault(); leaveFaceIntro($('face-intro-description').value.trim()); };
+$('face-intro-skip').onclick = () => leaveFaceIntro('');
+function renderFace() {
+  const progress = $('face-progress');
+  progress.hidden = !(face.drawing || face.problem || (face.asked && session?.portrait && session.stage === 'intake'));
+  progress.textContent = face.drawing ? 'Your future self\'s face is being drawn while you answer…'
+    : face.problem || 'Your future self\'s face is ready. You will see it when you meet your future self.';
+  const area = $('face-area');
+  area.hidden = !(face.available && session && (localStage || session.stage) === 'twin');
+  if (area.hidden) return;
+  const portrait = session.portrait, left = Math.max(0, face.limit - (session.portraitCount || 0));
+  $('face').hidden = !portrait || face.editing;
+  $('face-form').hidden = Boolean(portrait) && !face.editing;
+  $('face-cancel').hidden = $('face-remove').hidden = !portrait;
+  $('face-draw').textContent = portrait ? 'Draw a new face' : 'Draw my future self';
+  $('face-draw').disabled = Boolean(job) || left === 0 || face.drawing;
+  $('face-allowance').textContent = left
+    ? `You can draw ${left} ${portrait ? 'more ' : ''}${left === 1 ? 'picture' : 'pictures'} for this twin.`
+    : 'This twin has used all its pictures. Keep or remove the current face.';
+  if (portrait && portrait.version !== face.loaded && portrait.version !== face.loading) loadFace(portrait);
+  if (!portrait && face.loaded) { face.player?.clear(); face.loaded = 0; }
+}
+// The picture is fetched separately from the session JSON and drawn on a canvas (no image URL, so the CSP stays strict).
+async function loadFace(portrait) {
+  face.loading = portrait.version;
+  const forToken = token;
+  try {
+    const response = await fetch('/api/portrait', { headers: { Authorization: `Bearer ${forToken}` } });
+    if (!response.ok) throw new Error('The picture of your future self could not be loaded. Refresh to try again.');
+    const bitmap = await createImageBitmap(await response.blob());
+    if (token !== forToken || session?.portrait?.version !== portrait.version) return;
+    face.player ||= createTalkingPortrait($('face'));
+    face.player.load(bitmap, portrait.points);
+    bitmap.close?.();
+    face.loaded = portrait.version;
+  } catch (error) { if (token === forToken) errorMessage(error.message); }
+  finally { if (face.loading === portrait.version) face.loading = 0; }
+}
+$('face-form').onsubmit = event => {
+  event.preventDefault();
+  run(async signal => {
+    setLoading('Drawing your future self…', 'This usually takes up to a minute. Keep this page open.');
+    session = await api('/api/portrait', { description: $('face-description').value }, signal);
+    face.editing = false;
+  });
+};
+$('face-change').onclick = () => {
+  face.editing = true; $('face-description').value = session?.portrait?.description || '';
+  render(); $('face-description').focus();
+};
+$('face-cancel').onclick = () => { face.editing = false; render(); };
+$('face-remove').onclick = () => {
+  if (!confirm('Remove this face? Drawing a new one counts towards the picture limit.')) return;
+  run(async signal => { session = await api('/api/portrait', undefined, signal, 'DELETE'); face.editing = false; });
+};
+
 // Optional voice mode: hear the interviewer and the future self, answer by speaking. All text stays visible and editable.
 const voice = { available: false, liveAvailable: false, liveRun: null, audio: null, maxSeconds: 60, on: false, choice: '', recorder: null, stream: null, chunks: [], cancelled: false, timer: null, spoken: '',
   autoSend: true, monitor: null, autoTurn: false, heard: false, noSpeech: false, countdown: null };
@@ -194,11 +283,14 @@ function speak(text) {
     if (chosen) utterance.voice = chosen;
     utterance.lang = chosen?.lang || 'en-GB';
     utterance.onend = utterance.onerror = () => { renderVoice(); resolve(); };
+    // Only the future self has a face; interview questions are read without it.
+    if (face.loaded && voicePlace()?.panel === 'twin') face.player.syncUtterance(utterance);
     speechSynthesis.speak(utterance); renderVoice();
   });
 }
 function stopVoice() {
   if (canSpeak()) speechSynthesis.cancel();
+  face.player?.stop();
   if (voice.recorder) stopRecording(true);
   cancelCountdown();
   renderVoice();
@@ -487,6 +579,7 @@ function render() {
   renderProblems();
   renderInterview();
   renderProfileProcess();
+  renderFace();
   if (!session) return;
   if (stage === 'review') renderProfileEditor();
   thread('intake-thread', session.intake, 'Your interviewer');
@@ -770,8 +863,8 @@ $('welcome-form').onsubmit = event => {
   event.preventDefault();
   run(async signal => {
     const result = await api('/api/session', { name: $('name').value, consent: $('consent').checked }, signal);
-    token = result.token; session = result.session; localStage = ''; render();
-    await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
+    token = result.token; session = result.session; localStage = needsFaceIntro() ? 'face-intro' : ''; render();
+    if (localStage !== 'face-intro') await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
   });
 };
 $('voice-toggle').onclick = () => {
@@ -780,10 +873,10 @@ $('voice-toggle').onclick = () => {
   else stopVoice();
   render();
 };
-$('record').onclick = () => { if (canSpeak()) speechSynthesis.cancel(); startRecording(); };
+$('record').onclick = () => { if (canSpeak()) speechSynthesis.cancel(); face.player?.stop(); startRecording(); };
 $('stop-recording').onclick = () => stopRecording();
 $('cancel-recording').onclick = () => stopRecording(true);
-$('stop-speaking').onclick = () => { speechSynthesis.cancel(); renderVoice(); };
+$('stop-speaking').onclick = () => { speechSynthesis.cancel(); face.player?.stop(); renderVoice(); };
 $('voice-choice').onchange = () => {
   voice.choice = $('voice-choice').value; remember('voiceChoice', voice.choice);
   renderVoice(); speak('This is how I will sound.');
@@ -885,6 +978,7 @@ function download(name, value) {
 // Clears the page, not the server: used by Reset (guests) and Log out (accounts).
 function clearView() {
   stopVoice(); voice.spoken = '';
+  face.player?.clear(); face.loaded = 0; face.editing = false; face.asked = false; face.drawing = false; face.problem = '';
   job?.abort(); job = null; token = ''; session = null; localStage = ''; pending = ''; reviewKey = ''; activeProblem = '';
   document.querySelectorAll('form').forEach(form => form.reset());
   $('claims').replaceChildren(); $('problems').replaceChildren(); $('intake-thread').replaceChildren(); $('twin-thread').replaceChildren();
@@ -897,6 +991,7 @@ function clearView() {
 async function enterAccount(result, signal) {
   user = result.user; token = result.token; session = result.session; localStage = ''; $('account-notice').hidden = true; render();
   if (user.role === 'admin') return loadAdmin(signal);
+  if (needsFaceIntro()) { localStage = 'face-intro'; render(); return; }
   if (session.stage === 'intake' && session.interview.status === 'thinking') {
     await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
   }
@@ -1013,6 +1108,9 @@ async function initialize() {
     // Live words need the server's realtime model plus AudioWorklet and WebSocket support; otherwise record, then transcribe.
     voice.liveAvailable = Boolean(info.voice?.live && 'AudioWorkletNode' in window && 'WebSocket' in window);
     voice.maxSeconds = info.voice?.maxSeconds || voice.maxSeconds;
+    // The face needs the server's image service and a browser that can decode the picture for the canvas.
+    face.available = Boolean(info.portraits?.available && 'createImageBitmap' in window);
+    face.limit = info.portraits?.perTwin || face.limit;
     try {
       voice.on = voice.available && sessionStorage.getItem('voiceMode') === 'on';
       voice.choice = sessionStorage.getItem('voiceChoice') || '';

@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { once } from 'node:events';
@@ -13,6 +13,7 @@ import {
 import { advanceProfile, canRetryProfile } from './lib/profile-builder.mjs';
 import { AnthropicModel } from './lib/anthropic-model.mjs';
 import { createSpeech, SPEECH_LIMITS, AUDIO_TYPES } from './lib/speech-model.mjs';
+import { createPortraits, locateFace, PORTRAIT_LIMITS, DEFAULT_FACE_POINTS } from './lib/portrait-model.mjs';
 import { generateSuggestions } from './lib/suggestions.mjs';
 import { createCryptoBox } from './lib/crypto-box.mjs';
 import { openStore, RETENTION } from './lib/store.mjs';
@@ -34,6 +35,7 @@ const STATIC = {
   '/voice-activity.js': ['voice-activity.js', 'text/javascript'],
   '/live-transcript.js': ['live-transcript.js', 'text/javascript'],
   '/pcm-worklet.js': ['pcm-worklet.js', 'text/javascript'],
+  '/talking-portrait.js': ['talking-portrait.js', 'text/javascript'],
   '/styles.css': ['styles.css', 'text/css']
 };
 function json(res, status, value) {
@@ -84,7 +86,7 @@ export function createStore() {
 // What is saved for an account: the working state, minus what must never be stored.
 const SAVED = ['name', 'stage', 'answers', 'intake', 'interview', 'interviewUsage', 'interviewRetryAllowed', 'sample', 'claims',
   'facts', 'profile', 'profileDraft', 'profileRetryAllowed', 'messages', 'problemThreads', 'reflection', 'profileVersion',
-  'suggestions', 'suggestionStatus', 'transcriptions', 'notice'];
+  'suggestions', 'suggestionStatus', 'transcriptions', 'notice', 'portrait', 'portraitCount', 'portraitSafetyId'];
 export function savedDocument(s) {
   const document = structuredClone(Object.fromEntries(SAVED.map(key => [key, s[key]])));
   // Pasted work samples may be confidential company material: they stay in memory for this visit only.
@@ -106,16 +108,27 @@ export function savedDocument(s) {
 }
 const DAY = 24 * 60 * 60 * 1000;
 
-export function createApp(model = new AnthropicModel(), speech = createSpeech(), store = createStore()) {
+export function createApp(model = new AnthropicModel(), speech = createSpeech(), store = createStore(), portraits = createPortraits()) {
   const sessions = new Map();
   const accounts = new Map(); // Account ID → working token: one working copy per account in memory.
   const throttle = createThrottle();
   const ttl = 30 * 60 * 1000;
   let modelBusy = false; // Keep one generation at a time for this private development prototype.
+  let lockedForFace = false; // The lock is held by the short look at a new face picture.
+  // Waits until the Claude lock is free (true), or gives up after `ms` (false).
+  async function lockFree(ms, signal) {
+    const until = Date.now() + ms;
+    while (modelBusy) {
+      if (Date.now() > until) return false;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      signal?.throwIfAborted();
+    }
+    return true;
+  }
   function sweep() {
     for (const [token, s] of sessions) {
       if (Date.now() - s.touched > ttl) {
-        s.controller?.abort(); s.speechController?.abort(); sessions.delete(token);
+        s.controller?.abort(); s.speechController?.abort(); s.portraitController?.abort(); sessions.delete(token);
         if (s.userId) accounts.delete(s.userId); // Already saved after each change; this only frees memory.
       }
     }
@@ -139,7 +152,9 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       interviewUsage: newInterviewUsage(), interviewRetryAllowed: true,
       sample: null, claims: [], facts: [], profile: null, profileDraft: null, profileRetryAllowed: false, messages: [], problemThreads: {}, reflection: '',
       profileVersion: 0, suggestions: [], suggestionStatus: 'pending', transcriptions: 0,
-      metrics: null, notice: '', touched: Date.now()
+      metrics: null, notice: '', touched: Date.now(),
+      // The face: drawn on request, at most PORTRAIT_LIMITS.perTwin times. The safety ID is random, never a name.
+      portrait: null, portraitCount: 0, portraitSafetyId: randomUUID()
     };
   }
   function persist(s) {
@@ -182,10 +197,12 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
   function dropWorkspace(token) {
     const s = sessions.get(token);
     if (!s) return;
-    persist(s); s.controller?.abort(); s.speechController?.abort(); sessions.delete(token);
+    persist(s); s.controller?.abort(); s.speechController?.abort(); s.portraitController?.abort(); sessions.delete(token);
     if (s.userId) accounts.delete(s.userId);
   }
   async function useModel(s, res, work) {
+    // A face being located takes a few seconds: an interview turn waits for it instead of failing.
+    if (modelBusy && lockedForFace) await lockFree(15000);
     requireThat(!modelBusy, 'Another AI request is running. Try again shortly.', 429);
     modelBusy = true;
     const controller = new AbortController();
@@ -300,6 +317,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       if (method === 'GET' && path === '/api/info') {
         return json(res, 200, { examples: EXAMPLES, model: model.name, profileTopics: PROFILE_TOPICS, profileLimits: PROFILE_LIMITS,
           voice: { available: Boolean(speech), live: Boolean(speech?.live), maxSeconds: SPEECH_LIMITS.seconds },
+          portraits: { available: Boolean(portraits), descriptionLength: PORTRAIT_LIMITS.description, perTwin: PORTRAIT_LIMITS.perTwin },
           accounts: Boolean(store) });
       }
       if (method === 'GET' && path === '/api/health') {
@@ -396,7 +414,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
             throw new AppError(403, 'That password is not correct.');
           }
           const token = accounts.get(user.id);
-          if (token) { const s = sessions.get(token); s?.controller?.abort(); s?.speechController?.abort(); sessions.delete(token); accounts.delete(user.id); }
+          if (token) { const s = sessions.get(token); s?.controller?.abort(); s?.speechController?.abort(); s?.portraitController?.abort(); sessions.delete(token); accounts.delete(user.id); }
           store.deleteUser(user.id);
           res.setHeader('Set-Cookie', sessionCookie('', { clear: true }));
           return json(res, 200, { ok: true });
@@ -442,6 +460,18 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
         return json(res, 200, { ok: true });
       }
       if (method === 'GET' && path === '/api/session') return json(res, 200, publicSession(s));
+      // The face picture itself. It is not part of the session JSON, which every request returns.
+      if (method === 'GET' && path === '/api/portrait') {
+        requireThat(s.portrait, 'There is no picture yet.', 404);
+        const bytes = Buffer.from(s.portrait.image, 'base64');
+        res.writeHead(200, { 'Content-Type': s.portrait.type, 'Content-Length': bytes.length });
+        return res.end(bytes);
+      }
+      if (method === 'DELETE' && path === '/api/portrait') {
+        requireThat(!s.portraitController, 'A picture is being drawn. Wait for it to finish.', 409);
+        s.portrait = null; persist(s);
+        return json(res, 200, publicSession(s));
+      }
       requireThat(method === 'POST', 'Not found.', 404);
       if (path === '/api/transcribe') {
         requireThat(speech, 'Voice input is not configured on this server.', 503);
@@ -469,6 +499,33 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
         s.transcriptions += 1;
         // A short-lived token for one recording; the browser shows the words as they are recognised.
         return json(res, 200, await speech.liveSession());
+      }
+      // The face is described before the interview and drawn while it runs (or later, in the conversation).
+      // Drawing uses the image service, not the Claude lock, except for one short Claude look at the result.
+      if (path === '/api/portrait') {
+        requireThat(portraits, 'Character pictures are not set up on this server.', 503);
+        requireThat(['intake', 'twin'].includes(s.stage),
+          'Describe your face before the interview, or draw it once you meet your future self.', 409);
+        requireThat(!s.portraitController, 'A picture is already being drawn.', 409);
+        requireThat(s.portraitCount < PORTRAIT_LIMITS.perTwin,
+          `This twin has reached its limit of ${PORTRAIT_LIMITS.perTwin} pictures. Keep the current face or remove it.`, 429);
+        const description = text(input.description, 'Description', PORTRAIT_LIMITS.description, 3);
+        const controller = new AbortController(), disconnected = () => { if (!res.writableEnded) controller.abort(); };
+        s.portraitController = controller; res.on('close', disconnected);
+        try {
+          const drawn = await portraits.draw(description, { signal: controller.signal, safetyId: s.portraitSafetyId });
+          s.portraitCount += 1; // Counted once a picture exists: that is what is billed.
+          // During the interview the lock is usually free while the participant types; wait up to a minute.
+          let points = structuredClone(DEFAULT_FACE_POINTS);
+          if (await lockFree(60000, controller.signal)) {
+            modelBusy = true; lockedForFace = true;
+            try { points = await locateFace(model, drawn, controller.signal); } finally { modelBusy = false; lockedForFace = false; }
+          }
+          requireThat(sessions.get(token) === s, 'Session was reset. Start again.', 401);
+          s.portrait = { version: (s.portrait?.version || 0) + 1, description, type: drawn.type, image: drawn.image, points,
+            model: drawn.model, createdAt: new Date().toISOString() };
+          return json(res, 200, publicSession(s));
+        } finally { res.off('close', disconnected); delete s.portraitController; s.touched = Date.now(); }
       }
       requireThat(!s.controller, 'A response is already being generated.', 409);
       // Voice mode only shapes wording (speakable text); it never changes state or evidence.
