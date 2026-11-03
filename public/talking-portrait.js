@@ -196,7 +196,7 @@ export function createTalkingPortrait(root) {
     $('.tp-talk').setAttribute('visibility', talking ? 'visible' : 'hidden');
     if (!talking || drawnKey === mouth) return;
     drawnKey = mouth;
-    const m = face.mouth, scale = Math.max(0.5, m.w / 33); // The closed shared mouth is about 30 units wide.
+    const m = face.mouth, scale = Math.max(0.5, m.w / 40); // The closed shared mouth is about 30 units wide. 33-> 40%20 smaller
     const g = $('.tp-mouth');
     g.setAttribute('transform', `translate(${m.x.toFixed(1)},${m.y.toFixed(1)}) scale(${scale.toFixed(3)})`);
     g.innerHTML = mouthSVG(mouth, { id: `${id}c`, ink: m.ink, line: m.line / scale });
