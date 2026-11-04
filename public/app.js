@@ -1,6 +1,7 @@
 import { createSilenceDetector } from '/voice-activity.js';
 import { LIVE, toPcm16, sessionUpdate, appendAudio, endAudio, liveStart, reduceLive } from '/live-transcript.js';
 import { createTalkingPortrait } from '/talking-portrait.js';
+import { createTommy } from '/tommy.js';
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '', activeProblem = '';
 let user = null, accountsEnabled = false; // A signed-in account (saved twin), or null for a guest.
@@ -151,8 +152,14 @@ function renderInterview() {
 }
 
 // The future self's face: drawn once from the participant's description (server: /api/portrait), then animated here.
-const face = { available: false, limit: 5, player: null, loaded: 0, loading: 0, editing: false,
+const face = { available: false, limit: 5, player: null, tommy: null, loaded: 0, loading: 0, editing: false,
   asked: false, drawing: false, problem: '' };
+// Who is in the corner: Tommy during the interview (the face intro and the questions), and from then on only the
+// participant's own drawn face. After the interview Tommy is gone; without a drawn face the corner stays empty.
+const INTERVIEW_STAGES = ['face-intro', 'intake'];
+const tommyTime = () => INTERVIEW_STAGES.includes(localStage || session?.stage);
+const activeFace = () => (tommyTime() ? face.tommy : face.loaded ? face.player : null);
+const stopFaces = () => { face.player?.stop(); face.tommy?.stop(); };
 // The face is described first, before the interview starts (once per new twin; skipping is fine).
 const needsFaceIntro = () => face.available && !face.asked && session && !session.portrait &&
   session.stage === 'intake' && session.interview.status === 'thinking' && session.intake.length === 0;
@@ -184,24 +191,46 @@ async function drawInBackground(description) {
 $('face-intro-form').onsubmit = event => { event.preventDefault(); leaveFaceIntro($('face-intro-description').value.trim()); };
 $('face-intro-skip').onclick = () => leaveFaceIntro('');
 function renderFace() {
+  const stage = localStage || session?.stage;
   const progress = $('face-progress');
   progress.hidden = !(face.drawing || face.problem || (face.asked && session?.portrait && session.stage === 'intake'));
   progress.textContent = face.drawing ? 'Your future self\'s face is being drawn while you answer…'
-    : face.problem || 'Your future self\'s face is ready. You will see it when you meet your future self.';
+    : face.problem || 'Your future self\'s face is ready. You will see it when the interview is done.';
+  // The corner: Tommy during the interview, the participant's own face after it. Never on the welcome or admin screens.
+  const inSession = Boolean(session) && !['welcome', 'admin'].includes(stage);
+  const portrait = inSession ? session.portrait : null;
+  // Load the drawn face as soon as it exists, so it is ready the moment the interview ends.
+  if (portrait && portrait.version !== face.loaded && portrait.version !== face.loading) loadFace(portrait);
+  if (!portrait && face.loaded) { face.player?.clear(); face.loaded = 0; }
+  const showTommy = inSession && tommyTime(), showOwn = inSession && !showTommy && Boolean(face.loaded);
+  if (showTommy && !face.tommy) face.tommy = createTommy($('tommy'));
+  // Tommy is removed, not just hidden, once the interview is over.
+  if (!showTommy && face.tommy) { face.tommy.destroy(); face.tommy = null; }
+  if (!showOwn) face.player?.stop();
+  $('tommy').hidden = !showTommy;
+  $('face').hidden = !showOwn;
+  $('face-dock-label').textContent = showTommy ? 'Tommy' : 'Your future self';
+  $('face-dock').hidden = !(showTommy || showOwn);
+  document.body.classList.toggle('has-dock', showTommy || showOwn);
+  // In the conversation: change, redraw or remove the face, or draw one if there is none yet.
   const area = $('face-area');
-  area.hidden = !(face.available && session && (localStage || session.stage) === 'twin');
+  area.hidden = !(face.available && session && stage === 'twin');
   if (area.hidden) return;
-  const portrait = session.portrait, left = Math.max(0, face.limit - (session.portraitCount || 0));
-  $('face').hidden = !portrait || face.editing;
-  $('face-form').hidden = Boolean(portrait) && !face.editing;
-  $('face-cancel').hidden = $('face-remove').hidden = !portrait;
+  const left = Math.max(0, face.limit - (session.portraitCount || 0));
+  $('face-note').textContent = portrait ? 'Your future self\'s face is in the top-right corner.'
+    : face.drawing ? 'Your face is still being drawn; it appears in the top-right corner when it is ready.'
+    : 'Your future self has no face yet. Draw one and it appears in the top-right corner.';
+  $('face-change').textContent = portrait ? 'Change the face' : 'Draw my own face';
+  $('face-change').hidden = face.editing || face.drawing;
+  $('face-form').hidden = !face.editing;
+  $('face-cancel').hidden = false;
+  $('face-cancel').textContent = portrait ? 'Keep the current face' : 'Not now';
+  $('face-remove').hidden = !portrait;
   $('face-draw').textContent = portrait ? 'Draw a new face' : 'Draw my future self';
   $('face-draw').disabled = Boolean(job) || left === 0 || face.drawing;
   $('face-allowance').textContent = left
     ? `You can draw ${left} ${portrait ? 'more ' : ''}${left === 1 ? 'picture' : 'pictures'} for this twin.`
     : 'This twin has used all its pictures. Keep or remove the current face.';
-  if (portrait && portrait.version !== face.loaded && portrait.version !== face.loading) loadFace(portrait);
-  if (!portrait && face.loaded) { face.player?.clear(); face.loaded = 0; }
 }
 // The picture is fetched separately from the session JSON and drawn on a canvas (no image URL, so the CSP stays strict).
 async function loadFace(portrait) {
@@ -216,6 +245,7 @@ async function loadFace(portrait) {
     face.player.load(bitmap, portrait.points);
     bitmap.close?.();
     face.loaded = portrait.version;
+    render();
   } catch (error) { if (token === forToken) errorMessage(error.message); }
   finally { if (face.loading === portrait.version) face.loading = 0; }
 }
@@ -283,14 +313,15 @@ function speak(text) {
     if (chosen) utterance.voice = chosen;
     utterance.lang = chosen?.lang || 'en-GB';
     utterance.onend = utterance.onerror = () => { renderVoice(); resolve(); };
-    // Only the future self has a face; interview questions are read without it.
-    if (face.loaded && voicePlace()?.panel === 'twin') face.player.syncUtterance(utterance);
+    // The corner face talks along: Tommy reads the interview questions, the drawn face the future self's replies.
+    const panel = voicePlace()?.panel;
+    if (panel === 'intake' || panel === 'twin') activeFace()?.syncUtterance(utterance);
     speechSynthesis.speak(utterance); renderVoice();
   });
 }
 function stopVoice() {
   if (canSpeak()) speechSynthesis.cancel();
-  face.player?.stop();
+  stopFaces();
   if (voice.recorder) stopRecording(true);
   cancelCountdown();
   renderVoice();
@@ -873,10 +904,10 @@ $('voice-toggle').onclick = () => {
   else stopVoice();
   render();
 };
-$('record').onclick = () => { if (canSpeak()) speechSynthesis.cancel(); face.player?.stop(); startRecording(); };
+$('record').onclick = () => { if (canSpeak()) speechSynthesis.cancel(); stopFaces(); startRecording(); };
 $('stop-recording').onclick = () => stopRecording();
 $('cancel-recording').onclick = () => stopRecording(true);
-$('stop-speaking').onclick = () => { speechSynthesis.cancel(); face.player?.stop(); renderVoice(); };
+$('stop-speaking').onclick = () => { speechSynthesis.cancel(); stopFaces(); renderVoice(); };
 $('voice-choice').onchange = () => {
   voice.choice = $('voice-choice').value; remember('voiceChoice', voice.choice);
   renderVoice(); speak('This is how I will sound.');

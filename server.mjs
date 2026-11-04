@@ -36,6 +36,8 @@ const STATIC = {
   '/live-transcript.js': ['live-transcript.js', 'text/javascript'],
   '/pcm-worklet.js': ['pcm-worklet.js', 'text/javascript'],
   '/talking-portrait.js': ['talking-portrait.js', 'text/javascript'],
+  '/tommy.js': ['tommy.js', 'text/javascript'],
+  '/tommy.png': ['tommy.png', 'image/png'],
   '/styles.css': ['styles.css', 'text/css']
 };
 function json(res, status, value) {
@@ -311,7 +313,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       if (method === 'GET' && STATIC[path]) {
         const [file, type] = STATIC[path];
         const data = await readFile(new URL(`./public/${file}`, import.meta.url));
-        res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
+        res.writeHead(200, { 'Content-Type': type.startsWith('image/') ? type : `${type}; charset=utf-8` });
         return res.end(data);
       }
       if (method === 'GET' && path === '/api/info') {

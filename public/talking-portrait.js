@@ -165,12 +165,63 @@ const store = {
 };
 let uid = 0;
 
+// The timing engine shared by every character (a drawn face here, Tommy in tommy.js). It calls `setMouth` with a
+// shape from VISEMES and `setTalking` with true/false; the character decides what those look like.
+export function createLipSync({ setMouth, setTalking }) {
+  let timers = [], tok = 0;
+  const clear = () => { timers.forEach(clearTimeout); timers = []; };
+  function play(seq, scale) {
+    clear(); let t = 0;
+    for (const [k, d] of seq) { timers.push(setTimeout(() => setMouth(VISEMES.includes(k) ? k : 'rest'), t)); t += d * scale; }
+    return t;
+  }
+  return {
+    // Animates an utterance the app speaks. Call before speechSynthesis.speak(u); the app's own handlers keep working.
+    syncUtterance(u) {
+      const text = u.text || '', mine = ++tok;
+      clear();
+      const key = `face:msPerChar:${u.voice?.name || 'default'}:${u.rate || 1}`;
+      const msPerChar = store.get(key) || BASE_MS_PER_CHAR / (u.rate || 1);
+      let gotWord = false, startedAt = 0, done = false;
+      return new Promise(resolve => {
+        const finish = ok => {
+          if (done) return; done = true;
+          if (mine === tok) {
+            clear(); setTalking(false);
+            if (ok && startedAt) {
+              // Learn this voice's speed, so the estimate improves for voices without word events.
+              const real = (performance.now() - startedAt) / Math.max(10, text.length);
+              if (real > 20 && real < 400) store.set(key, (msPerChar * 0.6 + real * 0.4).toFixed(1));
+            }
+          }
+          resolve();
+        };
+        u.addEventListener('start', () => {
+          if (mine !== tok) return;
+          startedAt = performance.now(); setTalking(true);
+          // No word events within 250 ms: this voice does not send them, so run the whole line on the estimate.
+          timers.push(setTimeout(() => { if (!gotWord && mine === tok) play(textToVisemes(text), msPerChar / BASE_MS_PER_CHAR); }, 250));
+        });
+        u.addEventListener('boundary', event => {
+          if (mine !== tok || (event.name && event.name !== 'word')) return;
+          gotWord = true;
+          const word = text.slice(event.charIndex).match(/^\S+/);
+          if (word) play(textToVisemes(word[0]), (msPerChar / BASE_MS_PER_CHAR) * 0.85);
+        });
+        u.addEventListener('end', () => finish(true));
+        u.addEventListener('error', () => finish(false));
+      });
+    },
+    stop() { tok++; clear(); setTalking(false); }
+  };
+}
+
 // `root` holds a .face-stage element with a <canvas> and an <svg> inside (see index.html).
 export function createTalkingPortrait(root) {
   const stage = root.querySelector('.face-stage'), canvas = root.querySelector('canvas'), overlay = root.querySelector('svg');
   const ctx = canvas.getContext('2d', { willReadFrequently: true }), id = `tp${++uid}`;
   const reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let face = null, talking = false, mouth = 'rest', drawnKey = '', timers = [], tok = 0, raf = 0, blinkTimer = 0;
+  let face = null, talking = false, mouth = 'rest', drawnKey = '', raf = 0, blinkTimer = 0;
   const $ = selector => overlay.querySelector(selector);
 
   function build() {
@@ -201,14 +252,9 @@ export function createTalkingPortrait(root) {
     g.setAttribute('transform', `translate(${m.x.toFixed(1)},${m.y.toFixed(1)}) scale(${scale.toFixed(3)})`);
     g.innerHTML = mouthSVG(mouth, { id: `${id}c`, ink: m.ink, line: m.line / scale });
   }
-  const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
-  function setMouth(k) { mouth = VISEMES.includes(k) ? k : 'rest'; drawMouth(); }
+  function setMouth(k) { mouth = k; drawMouth(); }
   function setTalking(on) { talking = on; if (!on) mouth = 'rest'; drawnKey = ''; drawMouth(); }
-  function play(seq, scale) {
-    clearTimers(); let t = 0;
-    for (const [k, d] of seq) { timers.push(setTimeout(() => setMouth(k), t)); t += d * scale; }
-    return t;
-  }
+  const lips = createLipSync({ setMouth, setTalking });
   function scheduleBlink() {
     clearTimeout(blinkTimer);
     if (!face?.eyes) return;
@@ -243,41 +289,7 @@ export function createTalkingPortrait(root) {
       this.stop(); face = null; cancelAnimationFrame(raf); clearTimeout(blinkTimer);
       overlay.innerHTML = ''; ctx.clearRect(0, 0, canvas.width, canvas.height); stage.style.transform = '';
     },
-    // Animates an utterance the app speaks. Call before speechSynthesis.speak(u); the app's own handlers keep working.
-    syncUtterance(u) {
-      const text = u.text || '', mine = ++tok;
-      clearTimers();
-      const key = `face:msPerChar:${u.voice?.name || 'default'}:${u.rate || 1}`;
-      let msPerChar = store.get(key) || BASE_MS_PER_CHAR / (u.rate || 1), gotWord = false, startedAt = 0, done = false;
-      return new Promise(resolve => {
-        const finish = ok => {
-          if (done) return; done = true;
-          if (mine === tok) {
-            clearTimers(); setTalking(false);
-            if (ok && startedAt) {
-              // Learn this voice's speed, so the estimate improves for voices without word events.
-              const real = (performance.now() - startedAt) / Math.max(10, text.length);
-              if (real > 20 && real < 400) store.set(key, (msPerChar * 0.6 + real * 0.4).toFixed(1));
-            }
-          }
-          resolve();
-        };
-        u.addEventListener('start', () => {
-          if (mine !== tok) return;
-          startedAt = performance.now(); setTalking(true);
-          // No word events within 250 ms: this voice does not send them, so run the whole line on the estimate.
-          timers.push(setTimeout(() => { if (!gotWord && mine === tok) play(textToVisemes(text), msPerChar / BASE_MS_PER_CHAR); }, 250));
-        });
-        u.addEventListener('boundary', event => {
-          if (mine !== tok || (event.name && event.name !== 'word')) return;
-          gotWord = true;
-          const word = text.slice(event.charIndex).match(/^\S+/);
-          if (word) play(textToVisemes(word[0]), (msPerChar / BASE_MS_PER_CHAR) * 0.85);
-        });
-        u.addEventListener('end', () => finish(true));
-        u.addEventListener('error', () => finish(false));
-      });
-    },
-    stop() { tok++; clearTimers(); if (face) setTalking(false); }
+    syncUtterance(u) { return face ? lips.syncUtterance(u) : Promise.resolve(); },
+    stop() { lips.stop(); }
   };
 }

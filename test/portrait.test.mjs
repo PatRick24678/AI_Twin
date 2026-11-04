@@ -38,7 +38,7 @@ test('a portrait request goes to the fixed OpenAI edits endpoint with the style 
   assert.equal(calls[0].options.redirect, 'error');
   assert.equal(calls[0].options.headers.Authorization, `Bearer ${KEY}`);
   const form = calls[0].options.body;
-  assert.equal(form.get('model'), 'gpt-image-2');
+  assert.equal(form.get('model'), 'gpt-image-2.5-sunburst');
   assert.match(form.get('prompt'), /Curly dark hair, light brown skin\./);
   assert.equal(form.get('image[]').type, 'image/png');
   assert.equal(form.get('size'), '1024x1024');
@@ -151,6 +151,14 @@ async function fixture(t, service) {
   }
   return { call, twin, base };
 }
+
+test('Tommy\'s picture is served from this site as a PNG', async t => {
+  const { call } = await fixture(t, null);
+  const picture = await call('/tommy.png', undefined, '', 'GET');
+  assert.equal(picture.status, 200);
+  assert.equal(picture.type, 'image/png');
+  assert.deepEqual(picture.body.subarray(1, 4), Buffer.from('PNG'));
+});
 
 test('without the image service the face is switched off and the route says so', async t => {
   const { call, twin } = await fixture(t, null);

@@ -16,6 +16,14 @@
     <button id="logout" class="secondary" hidden>Log out</button>
     <button id="reset" class="secondary" hidden>Reset and forget session</button>
   </div></header>
+<!-- Fixed in the top-right corner: Tommy during the interview, the participant's own drawn face after it. -->
+<aside id="face-dock" class="face-dock" aria-label="Your future self" hidden>
+  <div id="face" class="face-portrait" hidden>
+    <div class="face-stage"><canvas id="face-canvas" aria-label="Your future self"></canvas><svg id="face-overlay" aria-hidden="true"></svg></div>
+  </div>
+  <div id="tommy" class="face-tommy" hidden></div>
+  <p id="face-dock-label" class="face-dock-label">Tommy</p>
+</aside>
 <main>
   <p class="eyebrow">A possible future. Still your way of working.</p>
   <p id="health" class="muted">Checking Claude access…</p>
@@ -123,7 +131,8 @@
     <p class="eyebrow">Before we start</p>
     <h2>How do you look?</h2>
     <p>Your future self gets a face, drawn in a simple comic style from your own description. It is drawn while you
-      answer the questions, and it moves its mouth when voice mode reads its replies aloud.</p>
+      answer the questions, and it moves its mouth when voice mode reads its replies aloud. During the questions,
+      Tommy, our robot, keeps you company; your own face takes over when you meet your future self.</p>
     <form id="face-intro-form">
       <label>Describe yourself in a few words
         <textarea id="face-intro-description" maxlength="400" rows="3" required
@@ -265,8 +274,8 @@
     </div>
     <!-- The future self's face: a picture drawn from the participant's own description, with shared mouth shapes on top. -->
     <div id="face-area" class="face-area" hidden>
-      <div id="face" class="face" hidden>
-        <div class="face-stage"><canvas id="face-canvas" aria-label="Your future self"></canvas><svg id="face-overlay" aria-hidden="true"></svg></div>
+      <div class="face-controls">
+        <p id="face-note" class="muted"></p>
         <button id="face-change" type="button" class="secondary">Change the face</button>
       </div>
       <form id="face-form" class="face-form" hidden>

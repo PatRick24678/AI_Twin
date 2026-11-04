@@ -90,10 +90,21 @@ Live transcription is on by default when voice is configured. It uses Mistral's 
 Before the interview starts, a new twin gets a "How do you look?" step: the participant describes how they look in a
 few words (at most 400 characters) and continues to the questions, or skips. The picture is drawn in the background
 while they answer, so it is ready when they meet their future self. In the conversation they can change, redraw or
-remove it, or draw one if they skipped or the drawing failed. It is off without an OpenAI key; the app then stays as it was.
+remove it, or draw one if they skipped or the drawing failed. Drawing is off without an OpenAI key.
+
+**The corner face and Tommy.** A character is fixed in the top-right corner of the screen (`#face-dock` in
+`public/index.html`) and stays there while the page scrolls. During the interview (the "How do you look?" step and the
+questions) that is always **Tommy**, the Tatoma robot (`public/tommy.js`, inline SVG drawn from the character sheet),
+who also talks along when voice mode reads the questions. Once the interview is over Tommy is removed: from then on,
+including the conversation, the corner shows only the participant's own drawn face, which talks along with the future
+self's replies. Without a drawn face (skipped, still being drawn, failed, removed, or no OpenAI key) the corner stays
+empty after the interview. Tommy has no mouth: he speaks with a row of five light
+bars on his face plate that rise and fall with the same timed shapes as a drawn mouth, while his eyes glow and his head
+light flickers. He blinks and sways like the drawn face. Both characters share one timing engine (`createLipSync` in
+`public/talking-portrait.js`), so a third character only needs its own `setMouth` and `setTalking`.
 
 **How a face is made**
-1. `POST /api/portrait` sends only that description to OpenAI's image model (`gpt-image-2` by default,
+1. `POST /api/portrait` sends only that description to OpenAI's image model (`gpt-image-2.5-sunburst` by default,
    `OPENAI_IMAGE_MODEL` in `.env`), together with the style board `assets/portrait-style.png`: four example heads from
    the character sheets. The prompt asks for one head-and-shoulders portrait in that style, facing the viewer, with the
    mouth closed and drawn as a single line. The profile and conversation are never sent.

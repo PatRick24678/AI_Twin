@@ -68,3 +68,29 @@ test('blinking is switched off when an eye cannot be found', () => {
   assert.equal(face.eyes, null);
   assert.equal(face.mouth.found, false);
 });
+
+test('Tommy speaks with a light bar: quiet when resting, tallest in the middle, highest on wide vowels', async () => {
+  const { barHeights, OPENNESS, tommySVG } = await import('../public/tommy.js');
+  assert.ok(VISEMES.every(shape => shape in OPENNESS), 'every mouth shape has a light level');
+  assert.deepEqual(barHeights('rest'), [4, 4, 4, 4, 4]);
+  const wide = barHeights('ai'), small = barHeights('mbp');
+  assert.equal(Math.max(...wide), wide[2]);
+  assert.ok(wide[2] > barHeights('e')[2] && barHeights('e')[2] > small[2] && small[2] > 4);
+  const svg = tommySVG('t');
+  assert.match(svg, /class="tm-bars"/);
+  assert.doesNotMatch(svg, /style=/, 'the page CSP blocks inline styles');
+});
+
+test('one timing engine drives every character and stops cleanly', async () => {
+  const { createLipSync } = await import('../public/talking-portrait.js');
+  const seen = [], talking = [];
+  const lips = createLipSync({ setMouth: k => seen.push(k), setTalking: on => talking.push(on) });
+  const u = new EventTarget(); u.text = 'Hello there.'; u.rate = 1;
+  const done = lips.syncUtterance(u);
+  u.dispatchEvent(new Event('start'));
+  await new Promise(resolve => setTimeout(resolve, 900)); // no word events: the estimate runs
+  u.dispatchEvent(new Event('end'));
+  await done;
+  assert.deepEqual(talking, [true, false]);
+  assert.ok(seen.length > 2 && seen.every(k => VISEMES.includes(k)));
+});

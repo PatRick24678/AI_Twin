@@ -143,11 +143,25 @@ button:disabled { opacity: .55; cursor: wait; }
   padding: 12px 16px; border-left: 4px solid #244f3e; background: #edf4ec; border-radius: 6px; }
 .problem-focus h3 { margin: 0; }
 .problem-focus .eyebrow { margin: 0; }
-/* The future self's face (public/talking-portrait.js): the picture on a canvas, the mouth and blink in an SVG on top. */
+/* The future self's face, fixed in the top-right corner (public/talking-portrait.js, public/tommy.js). */
+.face-dock { position: fixed; z-index: 30; top: calc(10px + env(safe-area-inset-top, 0px)); right: calc(14px + env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
+.face-stage, .face-tommy { position: relative; width: 116px; aspect-ratio: 1; border-radius: 50%; overflow: hidden; background: #f7f4ec;
+  border: 3px solid #fff; box-shadow: 0 4px 16px rgba(29, 40, 50, .18); }
+.face-stage { transform-origin: 50% 100%; }
+.face-stage canvas, .face-stage svg, .face-tommy svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.face-dock-label { margin: 0; padding: 1px 9px; border-radius: 8px; background: rgba(255, 255, 255, .92); color: #244f3e; font-size: .75rem; font-weight: 700; }
+/* Keep the header buttons and the top of the page clear of the corner face. */
+body.has-dock header { padding-right: max(160px, calc((100vw - 1000px) / 2)); }
+@media (max-width: 1240px) { body.has-dock main { margin-top: 96px; } }
+@media (max-width: 600px) {
+  .face-stage, .face-tommy { width: 76px; }
+  body.has-dock header { padding-right: 104px; }
+  body.has-dock main { margin-top: 56px; }
+}
 .face-area { margin: 18px 0 6px; }
-.face { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.face-stage { position: relative; width: min(260px, 70vw); aspect-ratio: 1; border-radius: 50%; overflow: hidden; background: #f7f4ec; transform-origin: 50% 100%; }
-.face-stage canvas, .face-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.face-form { border: 1px solid #d8e0d8; border-radius: 12px; padding: 16px; background: #fafbf8; }
+.face-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.face-controls p { margin: 0; }
+.face-form { margin-top: 10px; border: 1px solid #d8e0d8; border-radius: 12px; padding: 16px; background: #fafbf8; }
 .face-form h3 { margin-top: 0; }
 .face-form textarea { width: 100%; }
