@@ -1,14 +1,14 @@
 // Tommy, the stand-in future self: shown until (or instead of) a face drawn from the participant's description.
-// The picture is public/tommy.png (to change his look, replace that file; see TOMMY below for where his eyes,
+// The picture is assets/tommy.png (to change his look, replace that file; see TOMMY below for where his eyes,
 // head light and speaking lights sit in it). A robot has no mouth, so Tommy speaks with lights laid over the
 // picture: a row of light bars under his eyes rises and falls with the same timed mouth shapes as a drawn face
 // (createLipSync), his eyes glow brighter and his head light pulses. The picture is served from this site and
 // the overlay is inline SVG with styles set through the DOM, so the page's strict CSP stays unchanged.
 import { createLipSync } from './talking-portrait.js';
 
-// Positions in the picture's own pixels (public/tommy.png is 800 x 787). Update these if you replace the picture.
+// Positions in the picture's own pixels (assets/tommy.png is 800 x 787). Update these if you replace the picture.
 export const TOMMY = Object.freeze({
-  src: '/tommy.png', width: 800, height: 787,
+  src: '/assets/tommy.png', width: 800, height: 787,
   view: '60 15 680 680',                         // The part of the picture the round corner shows (x y width height).
   eyes: [{ x: 330.5, y: 212.5, rx: 18, ry: 31 }, { x: 479.5, y: 212.5, rx: 18, ry: 31 }],
   light: { x: 508, y: 97, r: 13 },               // The yellow head light.
@@ -76,7 +76,7 @@ export function createTommy(root) {
   }
   function frame(t) {
     if (!alive) return;
-    const sway = reduceMotion ? 0 : Math.sin(t / 1600) * 1.4 + (talking ? Math.sin(t / 260) * 0.8 : 0);
+    const sway = 0;//reduceMotion ? 0 : Math.sin(t / 1600) * 1.4 + (talking ? Math.sin(t / 260) * 0.8 : 0)
     head.setAttribute('transform', `rotate(${sway.toFixed(2)} ${TOMMY.pivot.x} ${TOMMY.pivot.y})`);
     // The head light breathes slowly, and flickers while Tommy talks.
     light.setAttribute('opacity', (talking ? 0.6 + 0.4 * Math.abs(Math.sin(t / 120)) : 0.25 + 0.15 * Math.sin(t / 900)).toFixed(2));

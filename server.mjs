@@ -29,6 +29,7 @@ import {
   recordControlledAnswer, explicitInterviewControl, endAfterProcessingLimit
 } from './lib/interviewer.mjs';
 
+// Files the page may load. Paths are relative to public/; Tommy's picture lives in the top-level assets/ folder.
 const STATIC = {
   '/': ['index.html', 'text/html'],
   '/app.js': ['app.js', 'text/javascript'],
@@ -37,7 +38,7 @@ const STATIC = {
   '/pcm-worklet.js': ['pcm-worklet.js', 'text/javascript'],
   '/talking-portrait.js': ['talking-portrait.js', 'text/javascript'],
   '/tommy.js': ['tommy.js', 'text/javascript'],
-  '/tommy.png': ['tommy.png', 'image/png'],
+  '/assets/tommy.png': ['../assets/tommy.png', 'image/png'],
   '/styles.css': ['styles.css', 'text/css']
 };
 function json(res, status, value) {

@@ -154,7 +154,7 @@ async function fixture(t, service) {
 
 test('Tommy\'s picture is served from this site as a PNG', async t => {
   const { call } = await fixture(t, null);
-  const picture = await call('/tommy.png', undefined, '', 'GET');
+  const picture = await call('/assets/tommy.png', undefined, '', 'GET');
   assert.equal(picture.status, 200);
   assert.equal(picture.type, 'image/png');
   assert.deepEqual(picture.body.subarray(1, 4), Buffer.from('PNG'));

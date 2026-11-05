@@ -146,7 +146,7 @@ button:disabled { opacity: .55; cursor: wait; }
 /* The future self's face, fixed in the top-right corner (public/talking-portrait.js, public/tommy.js). */
 .face-dock { position: fixed; z-index: 30; top: calc(10px + env(safe-area-inset-top, 0px)); right: calc(14px + env(safe-area-inset-right, 0px));
   display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
-.face-stage, .face-tommy { position: relative; width: 116px; aspect-ratio: 1; border-radius: 50%; overflow: hidden; background: #f7f4ec;
+.face-stage, .face-tommy { position: relative; width: var(--face-size, 116px); aspect-ratio: 1; border-radius: 50%; overflow: hidden; background: #f7f4ec;
   border: 3px solid #fff; box-shadow: 0 4px 16px rgba(29, 40, 50, .18); }
 .face-stage { transform-origin: 50% 100%; }
 .face-stage canvas, .face-stage svg, .face-tommy svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -154,6 +154,16 @@ button:disabled { opacity: .55; cursor: wait; }
 /* Keep the header buttons and the top of the page clear of the corner face. */
 body.has-dock header { padding-right: max(160px, calc((100vw - 1000px) / 2)); }
 @media (max-width: 1240px) { body.has-dock main { margin-top: 96px; } }
+/* Wide screens: the face fills the empty space to the right of the page, up to about 1/8 of the screen.
+   To make it bigger or smaller, change the last two numbers: the largest size (360px) and the share of the
+   screen height it may take (40vh). */
+@media (min-width: 1400px) {
+  .face-dock { --face-size: clamp(160px, calc((100vw - 1000px) / 2 - 56px), min(360px, 40vh));
+    top: calc(124px + env(safe-area-inset-top, 0px));
+    right: calc(((100vw - 1000px) / 2 - var(--face-size)) / 2); gap: 18px; }
+  .face-stage, .face-tommy { border-width: 4px; box-shadow: 0 8px 28px rgba(29, 40, 50, .2); }
+  .face-dock-label { font-size: .95rem; padding: 3px 14px; border-radius: 10px; }
+}
 @media (max-width: 600px) {
   .face-stage, .face-tommy { width: 76px; }
   body.has-dock header { padding-right: 104px; }

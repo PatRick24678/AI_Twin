@@ -267,7 +267,7 @@ export function createTalkingPortrait(root) {
   }
   function frame(t) {
     if (!face) return;
-    const sway = reduceMotion ? 0 : Math.sin(t / 1600) * 0.9 + (talking ? Math.sin(t / 280) * 0.5 : 0);
+    const sway = 0;//reduceMotion ? 0 : Math.sin(t / 1600) * 0.9 + (talking ? Math.sin(t / 280) * 0.5 : 0)
     const breathe = reduceMotion ? 1 : 1 + Math.sin(t / 1900) * 0.004;
     stage.style.transform = `rotate(${sway.toFixed(3)}deg) scale(${(1.03 * breathe).toFixed(4)})`;
     raf = requestAnimationFrame(frame);
