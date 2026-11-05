@@ -154,11 +154,15 @@ function renderInterview() {
 // The future self's face: drawn once from the participant's description (server: /api/portrait), then animated here.
 const face = { available: false, limit: 5, player: null, tommy: null, loaded: 0, loading: 0, editing: false,
   asked: false, drawing: false, problem: '' };
-// Who is in the corner: Tommy during the interview (the face intro and the questions), and from then on only the
-// participant's own drawn face. After the interview Tommy is gone; without a drawn face the corner stays empty.
-const INTERVIEW_STAGES = ['face-intro', 'intake'];
-const tommyTime = () => INTERVIEW_STAGES.includes(localStage || session?.stage);
-const activeFace = () => (tommyTime() ? face.tommy : face.loaded ? face.player : null);
+// Who is in the corner, per screen: the participant's own drawn face only in the conversation with the future self;
+// nobody on the confirmation screen (checking the profile), while the conversation is prepared, on the reflection,
+// and on the welcome and admin screens; Tommy on every other screen (the face description, the interview, the
+// example, building the profile and the follow-up questions). Without a drawn face the conversation's corner is empty.
+const OWN_FACE_STAGES = ['twin'], NOBODY_STAGES = ['welcome', 'face-intro','sample','admin', 'review', 'prepare','done', 'reflection'];
+const cornerFor = stage => !session || !stage || NOBODY_STAGES.includes(stage) ? 'nobody'
+  : OWN_FACE_STAGES.includes(stage) ? 'own' : 'tommy';
+const tommyTime = () => cornerFor(localStage || session?.stage) === 'tommy';
+const activeFace = () => (tommyTime() ? face.tommy : cornerFor(localStage || session?.stage) === 'own' && face.loaded ? face.player : null);
 const stopFaces = () => { face.player?.stop(); face.tommy?.stop(); };
 // The face is described first, before the interview starts (once per new twin; skipping is fine).
 const needsFaceIntro = () => face.available && !face.asked && session && !session.portrait &&
@@ -195,16 +199,16 @@ function renderFace() {
   const progress = $('face-progress');
   progress.hidden = !(face.drawing || face.problem || (face.asked && session?.portrait && session.stage === 'intake'));
   progress.textContent = face.drawing ? 'Your future self\'s face is being drawn while you answer…'
-    : face.problem || 'Your future self\'s face is ready. You will see it when the interview is done.';
-  // The corner: Tommy during the interview, the participant's own face after it. Never on the welcome or admin screens.
-  const inSession = Boolean(session) && !['welcome', 'admin'].includes(stage);
+    : face.problem || 'Your future self\'s face is ready. You will see it when you talk to your future self.';
+  // The corner: see cornerFor above.
+  const corner = cornerFor(stage), inSession = Boolean(session) && !['welcome', 'admin'].includes(stage);
   const portrait = inSession ? session.portrait : null;
-  // Load the drawn face as soon as it exists, so it is ready the moment the interview ends.
+  // Load the drawn face as soon as it exists, so it is ready the moment the conversation starts.
   if (portrait && portrait.version !== face.loaded && portrait.version !== face.loading) loadFace(portrait);
   if (!portrait && face.loaded) { face.player?.clear(); face.loaded = 0; }
-  const showTommy = inSession && tommyTime(), showOwn = inSession && !showTommy && Boolean(face.loaded);
+  const showTommy = corner === 'tommy', showOwn = corner === 'own' && Boolean(face.loaded);
   if (showTommy && !face.tommy) face.tommy = createTommy($('tommy'));
-  // Tommy is removed, not just hidden, once the interview is over.
+  // Tommy is removed, not just hidden, on the screens where he does not belong.
   if (!showTommy && face.tommy) { face.tommy.destroy(); face.tommy = null; }
   if (!showOwn) face.player?.stop();
   $('tommy').hidden = !showTommy;
@@ -313,9 +317,10 @@ function speak(text) {
     if (chosen) utterance.voice = chosen;
     utterance.lang = chosen?.lang || 'en-GB';
     utterance.onend = utterance.onerror = () => { renderVoice(); resolve(); };
-    // The corner face talks along: Tommy reads the interview questions, the drawn face the future self's replies.
+    // The corner face talks along: Tommy reads the interview and follow-up questions, the drawn face the future
+    // self's replies.
     const panel = voicePlace()?.panel;
-    if (panel === 'intake' || panel === 'twin') activeFace()?.syncUtterance(utterance);
+    if (panel === 'intake' || panel === 'clarify' || panel === 'twin') activeFace()?.syncUtterance(utterance);
     speechSynthesis.speak(utterance); renderVoice();
   });
 }

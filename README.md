@@ -93,13 +93,19 @@ while they answer, so it is ready when they meet their future self. In the conve
 remove it, or draw one if they skipped or the drawing failed. Drawing is off without an OpenAI key.
 
 **The corner face and Tommy.** A character is fixed in the top-right corner of the screen (`#face-dock` in
-`public/index.html`) and stays there while the page scrolls. During the interview (the "How do you look?" step and the
-questions) that is always **Tommy**, the Tatoma robot (`public/tommy.js`, with his picture in `assets/tommy.png`),
-who also talks along when voice mode reads the questions. Once the interview is over Tommy is removed: from then on,
-including the conversation, the corner shows only the participant's own drawn face, which talks along with the future
-self's replies. Without a drawn face (skipped, still being drawn, failed, removed, or no OpenAI key) the corner stays
-empty after the interview. On wide screens (1400px and up) the corner face grows into the free space to the right of
-the page, up to 360px or 40% of the screen height; `--face-size` in `public/styles.css` sets this. Tommy has no mouth: he speaks with a row of five light
+`public/index.html`) and stays there while the page scrolls. Who is shown depends on the screen (`cornerFor` in
+`public/app.js`):
+
+- **The conversation with the future self:** only the participant's own drawn face, which talks along with the future
+  self's replies. Without a drawn face (skipped, still being drawn, failed, removed, or no OpenAI key) the corner is
+  empty here.
+- **The face description, the interview, the example, building the profile and the follow-up questions:** **Tommy**,
+  the Tatoma robot (`public/tommy.js`, with his picture in `assets/tommy.png`), who talks along when voice mode reads
+  the questions.
+- **Confirming the profile, preparing the conversation, the reflection, and the welcome and admin screens:** nobody.
+
+On wide screens (1400px and up) the corner face grows into the free space to the right of the page, up to 360px or 40%
+of the screen height; `--face-size` in `public/styles.css` sets this. Tommy has no mouth: he speaks with a row of five light
 bars on his face plate that rise and fall with the same timed shapes as a drawn mouth, while his eyes glow and his head
 light flickers. He blinks and sways like the drawn face. Both characters share one timing engine (`createLipSync` in
 `public/talking-portrait.js`), so a third character only needs its own `setMouth` and `setTalking`.
