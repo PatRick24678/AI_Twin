@@ -39,7 +39,11 @@ const STATIC = {
   '/talking-portrait.js': ['talking-portrait.js', 'text/javascript'],
   '/tommy.js': ['tommy.js', 'text/javascript'],
   '/assets/tommy.png': ['../assets/tommy.png', 'image/png'],
-  '/styles.css': ['styles.css', 'text/css']
+  '/styles.css': ['styles.css', 'text/css'],
+  // TATOMA brand fonts, copied from the TATOMA Design System.
+  '/fonts/Canela-Light.woff2': ['fonts/Canela-Light.woff2', 'font/woff2'],
+  '/fonts/Canela-LightItalic.woff2': ['fonts/Canela-LightItalic.woff2', 'font/woff2'],
+  '/fonts/TStar-Reg.woff': ['fonts/TStar-Reg.woff', 'font/woff']
 };
 function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -314,7 +318,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       if (method === 'GET' && STATIC[path]) {
         const [file, type] = STATIC[path];
         const data = await readFile(new URL(`./public/${file}`, import.meta.url));
-        res.writeHead(200, { 'Content-Type': type.startsWith('image/') ? type : `${type}; charset=utf-8` });
+        res.writeHead(200, { 'Content-Type': /^(image|font)\//.test(type) ? type : `${type}; charset=utf-8` });
         return res.end(data);
       }
       if (method === 'GET' && path === '/api/info') {
