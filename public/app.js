@@ -623,7 +623,7 @@ function render() {
   if (pending) bubble($('twin-thread'), { role: 'assistant', content: pending }, 'Possible future self');
   $('twin-title').textContent = `${session.name}, a little further ahead.`;
   $('facts').replaceChildren(...(session.profile?.entries || []).map(fact => {
-    const item = document.createElement('li'); item.textContent = `${fact.text}${fact.scope ? ` — ${fact.scope}` : ''}`; return item;
+    const item = document.createElement('li'); item.textContent = `${fact.text}${fact.scope ? ` (${fact.scope})` : ''}`; return item;
   }));
   $('limited-profile').hidden = !session.profile?.limited;
   $('limited-profile').textContent = 'This twin has limited personal context. Missing information should remain unknown; the future workday is a possibility, not a prediction.';
@@ -635,7 +635,7 @@ function render() {
   if (activeProblem) $('suggestion-note').hidden = true;
   const m = session.metrics;
   $('metrics').textContent = m
-    ? `Last request — first text: ${m.firstTokenMs ?? '—'} ms · Total: ${m.totalMs} ms · Input: ${m.inputTokens ?? '—'} tokens · Output: ${m.outputTokens ?? '—'} tokens`
+    ? `Last request · first text: ${m.firstTokenMs ?? '—'} ms · Total: ${m.totalMs} ms · Input: ${m.inputTokens ?? '—'} tokens · Output: ${m.outputTokens ?? '—'} tokens`
     : '';
   $('saved-reflection').textContent = session.reflection || 'No reflection entered.';
 }
