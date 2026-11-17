@@ -43,7 +43,9 @@ const STATIC = {
   // TATOMA brand fonts, copied from the TATOMA Design System.
   '/fonts/Canela-Light.woff2': ['fonts/Canela-Light.woff2', 'font/woff2'],
   '/fonts/Canela-LightItalic.woff2': ['fonts/Canela-LightItalic.woff2', 'font/woff2'],
-  '/fonts/TStar-Reg.woff': ['fonts/TStar-Reg.woff', 'font/woff']
+  '/fonts/TStar-Reg.woff': ['fonts/TStar-Reg.woff', 'font/woff'],
+  // Page background: TATOMA wallpaper 3.
+  '/backgrounds/wallpaper.jpg': ['backgrounds/wallpaper.jpg', 'image/jpeg']
 };
 function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });

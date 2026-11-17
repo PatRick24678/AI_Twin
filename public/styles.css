@@ -44,7 +44,9 @@
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--offwhite); color: var(--aubergine); }
+/* Page background: a TATOMA wallpaper, fixed behind the content; offwhite shows while it loads. */
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; color: var(--aubergine);
+  background: var(--offwhite) url("/backgrounds/wallpaper.jpg") center bottom / cover no-repeat fixed; }
 main { flex: 1; width: 100%; max-width: 880px; margin: 48px auto 80px; padding: 0 20px; }
 
 /* Header: the product name in Canela, the context as a mono label. */
