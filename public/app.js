@@ -4,7 +4,7 @@ import { createTalkingPortrait } from '/talking-portrait.js';
 import { createTommy } from '/tommy.js';
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '', activeProblem = '';
-let user = null, accountsEnabled = false; // A signed-in account (saved twin), or null for a guest.
+let user = null, accountsEnabled = false, accessRequired = false; // A signed-in account (saved twin), or null for a guest.
 let profileTopics = {}, profileLimits = { entries: 112, statement: 240, scope: 180, problems: 5, problemTitle: 80, problemDetail: 240 };
 const stages = ['welcome', 'face-intro', 'intake', 'sample', 'profile_build', 'clarify', 'review', 'prepare', 'twin', 'reflection', 'done', 'admin'];
 function errorMessage(message = '') { $('error').textContent = message; $('error').hidden = !message; }
@@ -898,7 +898,8 @@ async function interviewRequest(path, data, signal, retry = 0) {
 $('welcome-form').onsubmit = event => {
   event.preventDefault();
   run(async signal => {
-    const result = await api('/api/session', { name: $('name').value, consent: $('consent').checked }, signal);
+    const result = await api('/api/session', { name: $('name').value, consent: $('consent').checked,
+      ...(accessRequired ? { accessCode: $('guest-access').value } : {}) }, signal);
     token = result.token; session = result.session; localStage = needsFaceIntro() ? 'face-intro' : ''; render();
     if (localStage !== 'face-intro') await interviewRequest('/api/interview/next', { requestId: session.interview.requestId }, signal);
   });
@@ -1087,7 +1088,8 @@ $('signup-form').onsubmit = event => {
   event.preventDefault();
   run(async signal => {
     const result = await api('/api/auth/signup', { name: $('signup-name').value, email: $('signup-email').value,
-      password: $('signup-password').value, consent: $('signup-consent').checked }, signal);
+      password: $('signup-password').value, consent: $('signup-consent').checked,
+      ...(accessRequired ? { accessCode: $('signup-access').value } : {}) }, signal);
     $('signup-password').value = '';
     await enterAccount(result, signal);
   });
@@ -1134,6 +1136,9 @@ async function initialize() {
     const info = await api('/api/info', undefined, undefined, 'GET');
     profileTopics = info.profileTopics; profileLimits = info.profileLimits;
     accountsEnabled = Boolean(info.accounts);
+    // A hosted server may ask for a shared access code before a guest session or a new account.
+    accessRequired = Boolean(info.accessCode);
+    document.querySelectorAll('.access-entry').forEach(label => { label.hidden = !accessRequired; label.querySelector('input').required = accessRequired; });
     // A login cookie from earlier: continue that twin without asking again.
     if (accountsEnabled) {
       const me = await api('/api/auth/me', undefined, undefined, 'GET', '');

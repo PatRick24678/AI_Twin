@@ -20,7 +20,7 @@ import { openStore, RETENTION } from './lib/store.mjs';
 import { wordCount } from './lib/reply-style.mjs';
 import {
   AUTH, checkEmail, checkPassword, hashPassword, verifyPassword, newSessionId, hashToken, readCookie, sessionCookie, createThrottle,
-  newResetCode, sameCode
+  newResetCode, sameCode, sameSecret
 } from './lib/auth.mjs';
 import { createInterview, recordInterviewInput } from './lib/interview-state.mjs';
 import { InterviewError, INTERVIEW_LIMITS } from './lib/interview-contract.mjs';
@@ -114,24 +114,64 @@ export function savedDocument(s) {
   return document;
 }
 const DAY = 24 * 60 * 60 * 1000;
+const TOO_MANY = 'Too many open sessions right now. Reset an old one, or try again later.';
 
-export function createApp(model = new AnthropicModel(), speech = createSpeech(), store = createStore(), portraits = createPortraits()) {
+// Hosting settings. All optional: without them the app is the local prototype (localhost only, one AI call at a time).
+export function hostingOptions(env = process.env) {
+  const whole = (name, fallback, min, max) => {
+    const value = env[name] === undefined || env[name] === '' ? fallback : Number(env[name]);
+    requireThat(Number.isInteger(value) && value >= min && value <= max, `${name} must be a whole number from ${min} to ${max}.`);
+    return value;
+  };
+  const origins = (env.PUBLIC_ORIGINS || '').split(',').map(item => item.trim()).filter(Boolean).map(item => {
+    const url = new URL(item);
+    requireThat(url.protocol === 'https:' && url.origin === item.replace(/\/$/, ''), `PUBLIC_ORIGINS: use origins like https://example.org, not ${url.href}.`);
+    return url.origin;
+  });
+  return Object.freeze({
+    origins, // The public https origins this server answers to; empty means local access only.
+    proxyHops: whole('TRUST_PROXY', 0, 0, 5), // X-Forwarded-For entries added by trusted proxies (Cloud Run: 1).
+    accessCode: (env.ACCESS_CODE || '').trim(), // Needed to start a guest session or create an account, when set.
+    aiConcurrency: whole('AI_CONCURRENCY', 1, 1, 16), maxSessions: whole('MAX_SESSIONS', 20, 1, 500),
+    hsts: env.FUTURE_SELF_SECURE_COOKIES === '1'
+  });
+}
+
+export function createApp(model = new AnthropicModel(), speech = createSpeech(), store = createStore(), portraits = createPortraits(),
+  options = hostingOptions()) {
   const sessions = new Map();
   const accounts = new Map(); // Account ID → working token: one working copy per account in memory.
   const throttle = createThrottle();
   const ttl = 30 * 60 * 1000;
-  let modelBusy = false; // Keep one generation at a time for this private development prototype.
-  let lockedForFace = false; // The lock is held by the short look at a new face picture.
-  // Waits until the Claude lock is free (true), or gives up after `ms` (false).
-  async function lockFree(ms, signal) {
+  const accessHash = options.accessCode ? hashToken(options.accessCode) : '';
+  let aiRunning = 0; // AI generations in progress, at most options.aiConcurrency (1 locally).
+  let facesRunning = 0; // Of which short looks at a new face picture.
+  const aiFull = () => aiRunning >= options.aiConcurrency;
+  // Waits until an AI slot is free (true), or gives up after `ms` (false).
+  async function slotFree(ms, signal) {
     const until = Date.now() + ms;
-    while (modelBusy) {
+    while (aiFull()) {
       if (Date.now() > until) return false;
       await new Promise(resolve => setTimeout(resolve, 300));
       signal?.throwIfAborted();
     }
     return true;
   }
+  // The visitor's address for throttling. Behind a proxy the socket address is the proxy's own.
+  function clientAddress(req) {
+    const hops = String(req.headers['x-forwarded-for'] || '').split(',').map(item => item.trim()).filter(Boolean);
+    return (options.proxyHops && hops.at(-options.proxyHops)) || req.socket.remoteAddress || 'local';
+  }
+  // A shared code keeps a public URL from spending the AI budget; existing accounts log in without it.
+  function checkAccess(input, address) {
+    if (!accessHash) return;
+    throttle.check(`${address}:access`);
+    if (!sameSecret(input.accessCode, accessHash)) {
+      throttle.fail(`${address}:access`);
+      throw new AppError(403, 'That access code is not correct. Ask Tatoma for the current code.');
+    }
+  }
+  let health = { at: 0, result: null }; // A good model check is reused for 10 minutes.
   function sweep() {
     for (const [token, s] of sessions) {
       if (Date.now() - s.touched > ttl) {
@@ -142,8 +182,11 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
   }
   const timer = setInterval(sweep, 60000).unref();
   // Storage limitation, at start-up and daily: inactive accounts, expired logins, old audit entries, and
-  // interviews left unfinished for 30 days (the account stays; its twin starts again).
+  // interviews left unfinished for 30 days (the account stays; its twin starts again). A hosted server may sleep
+  // between requests, so a request also runs it once a day has passed.
+  let lastPurge = 0;
   function purge() {
+    lastPurge = Date.now();
     store.purge();
     for (const userId of store.staleTwins(RETENTION.unfinishedDays)) {
       if (accounts.has(userId)) continue;
@@ -173,7 +216,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
   function openWorkspace(user, name = '') {
     const existing = accounts.get(user.id);
     if (existing && sessions.has(existing)) return existing;
-    requireThat(sessions.size < 20, 'Too many sessions. Reset an old one or restart the server.', 429);
+    requireThat(sessions.size < options.maxSessions, TOO_MANY, 429);
     const saved = store.loadTwin(user.id);
     const s = saved ? { ...workspace(saved.name, user.id), ...saved, userId: user.id, touched: Date.now() }
       : workspace(name || user.email.split('@')[0], user.id);
@@ -209,9 +252,9 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
   }
   async function useModel(s, res, work) {
     // A face being located takes a few seconds: an interview turn waits for it instead of failing.
-    if (modelBusy && lockedForFace) await lockFree(15000);
-    requireThat(!modelBusy, 'Another AI request is running. Try again shortly.', 429);
-    modelBusy = true;
+    if (aiFull() && facesRunning) await slotFree(15000);
+    requireThat(!aiFull(), 'Another AI request is running. Try again shortly.', 429);
+    aiRunning += 1;
     const controller = new AbortController();
     s.controller = controller;
     const disconnected = () => { if (!res.writableEnded) controller.abort(); };
@@ -221,7 +264,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       res.off('close', disconnected);
       delete s.controller;
       s.touched = Date.now();
-      modelBusy = false;
+      aiRunning -= 1;
     }
   }
   function syncInterview(s) {
@@ -307,12 +350,15 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
     res.setHeader('Content-Security-Policy',
       // Live transcription streams from the browser straight to Mistral; nothing else leaves the page.
       `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'${speech?.live ? ' wss://api.mistral.ai' : ''}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`);
+    if (options.hsts) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
     try {
+      // Locally only 127.0.0.1/localhost; hosted, only the configured public origins.
       const port = req.socket.localPort;
-      const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
-      requireThat(hosts.includes(req.headers.host), 'Local access only.', 403);
+      const origins = options.origins.length ? options.origins : [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
+      requireThat(origins.some(item => new URL(item).host === req.headers.host),
+        options.origins.length ? 'Unknown host.' : 'Local access only.', 403);
       const origin = req.headers.origin;
-      requireThat(!origin || hosts.some(host => origin === `http://${host}`), 'Origin not allowed.', 403);
+      requireThat(!origin || origins.includes(origin), 'Origin not allowed.', 403);
       const path = new URL(req.url, 'http://127.0.0.1').pathname;
       const method = req.method;
       if (method === 'GET' && STATIC[path]) {
@@ -325,21 +371,26 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
         return json(res, 200, { examples: EXAMPLES, model: model.name, profileTopics: PROFILE_TOPICS, profileLimits: PROFILE_LIMITS,
           voice: { available: Boolean(speech), live: Boolean(speech?.live), maxSeconds: SPEECH_LIMITS.seconds },
           portraits: { available: Boolean(portraits), descriptionLength: PORTRAIT_LIMITS.description, perTwin: PORTRAIT_LIMITS.perTwin },
-          accounts: Boolean(store) });
+          accounts: Boolean(store), accessCode: Boolean(accessHash) });
       }
       if (method === 'GET' && path === '/api/health') {
+        // Every page load asks; on a public URL a good answer is reused rather than asking Anthropic each time.
+        if (health.result && Date.now() - health.at < 10 * 60 * 1000) return json(res, 200, health.result);
         let result;
         try { result = await model.health(); }
         catch { result = { ok: false, error: 'Could not check Claude access. Check the key, model and connection.' }; }
+        health = result.ok ? { at: Date.now(), result } : { at: 0, result: null };
         return json(res, result.ok ? 200 : 503, result);
       }
       requireThat(path.startsWith('/api/'), 'Not found.', 404);
       if (method !== 'GET') requireThat(req.headers['x-future-self'] === '1', 'Missing client header.', 403);
       sweep();
+      if (store && Date.now() - lastPurge > DAY) purge();
       if (method === 'POST' && path === '/api/session') {
         const input = await body(req);
         requireThat(input.consent === true, 'Confirm the prototype notice first.');
-        requireThat(sessions.size < 20, 'Too many sessions. Reset an old one or restart the server.', 429);
+        checkAccess(input, clientAddress(req));
+        requireThat(sessions.size < options.maxSessions, TOO_MANY, 429);
         // A guest: kept in memory only, never written to the database.
         const token = randomBytes(32).toString('base64url'), s = workspace(text(input.name, 'Name or alias', 50, 1));
         sessions.set(token, s);
@@ -352,9 +403,10 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
           return json(res, 200, user ? signedIn(user) : { user: null });
         }
         requireThat(method === 'POST', 'Not found.', 404);
-        const input = await body(req), address = `ip:${req.socket.remoteAddress || 'local'}`;
+        const input = await body(req), address = `ip:${clientAddress(req)}`;
         if (path === '/api/auth/signup') {
           requireThat(input.consent === true, 'Confirm the privacy notice first.');
+          checkAccess(input, address);
           const email = checkEmail(input.email), name = text(input.name, 'Name or alias', 50, 1);
           checkPassword(input.password, email);
           throttle.check(`${address}:signup`);
@@ -524,9 +576,9 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
           s.portraitCount += 1; // Counted once a picture exists: that is what is billed.
           // During the interview the lock is usually free while the participant types; wait up to a minute.
           let points = structuredClone(DEFAULT_FACE_POINTS);
-          if (await lockFree(60000, controller.signal)) {
-            modelBusy = true; lockedForFace = true;
-            try { points = await locateFace(model, drawn, controller.signal); } finally { modelBusy = false; lockedForFace = false; }
+          if (await slotFree(60000, controller.signal)) {
+            aiRunning += 1; facesRunning += 1;
+            try { points = await locateFace(model, drawn, controller.signal); } finally { aiRunning -= 1; facesRunning -= 1; }
           }
           requireThat(sessions.get(token) === s, 'Session was reset. Start again.', 401);
           s.portrait = { version: (s.portrait?.version || 0) + 1, description, type: drawn.type, image: drawn.image, points,
@@ -725,11 +777,22 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT || 3000);
   requireThat(Number.isInteger(port) && port >= 1024 && port <= 65535, 'Invalid PORT.');
-  const store = createStore(), server = createApp(undefined, undefined, store);
-  server.listen(port, '127.0.0.1', () => {
-    console.log(`Future Self: http://127.0.0.1:${port}`);
+  // Locally only this computer can connect; a container sets HOST=0.0.0.0.
+  const host = process.env.HOST || '127.0.0.1', options = hostingOptions();
+  const store = createStore(), server = createApp(undefined, undefined, store, undefined, options);
+  server.listen(port, host, () => {
+    console.log(`Future Self: ${options.origins[0] || `http://127.0.0.1:${port}`}`);
     console.log(store ? `Saved accounts: on (database: ${store.path})`
       : 'Saved accounts: off (guest only). Run npm.cmd run init:storage, then restart.');
+    if (options.accessCode) console.log('Access code: required for guests and new accounts.');
   });
   server.on('error', error => { console.error(error.message); process.exitCode = 1; });
+  // A host stops the container with SIGTERM: finish open requests briefly, then close the database cleanly.
+  // Account twins are already saved after every change.
+  const shutdown = () => {
+    server.close(() => { store?.close(); process.exit(0); });
+    server.closeIdleConnections();
+    setTimeout(() => server.closeAllConnections(), 5000).unref();
+  };
+  process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
 }
