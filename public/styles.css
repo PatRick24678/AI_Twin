@@ -254,3 +254,34 @@ body.has-dock header { padding-right: max(160px, calc((100vw - 1000px) / 2)); }
 .face-form { margin-top: 12px; padding: 28px; border: 0; border-radius: var(--radius-card); background: var(--offwhite); }
 .face-form h3 { margin-top: 0; }
 .face-form textarea { width: 100%; }
+
+/* Generative UI in the final chat: OpenUI blocks (public/openui-reply.js) in TATOMA tokens.
+   OpenUI reads these variables; setting them on .genui keeps the rest of the page untouched. */
+.bubble:has(.genui) { max-width: 100%; width: 100%; }
+.genui { margin-top: 14px;
+  --openui-font-body: var(--font-sans); --openui-font-heading: var(--font-serif); --openui-font-label: var(--font-sans);
+  --openui-font-numbers: var(--font-sans);
+  --openui-background: var(--color-white); --openui-foreground: var(--color-white); --openui-popover-background: var(--color-white);
+  --openui-text-neutral-primary: var(--aubergine); --openui-text-neutral-secondary: var(--muted-fg);
+  --openui-text-neutral-tertiary: var(--mauve); --openui-text-accent-primary: var(--aubergine);
+  --openui-border-default: var(--hairline); --openui-border-interactive: var(--hairline); --openui-border-accent: var(--coral-wash);
+  --openui-sunk: var(--tint); --openui-elevated: var(--tint); --openui-highlight: var(--tint);
+  --openui-highlight-subtle: var(--tint); --openui-highlight-strong: var(--hairline);
+  --openui-interactive-accent-default: var(--coral); --openui-interactive-accent-hover: #FFA295;
+  --openui-interactive-accent-pressed: var(--coral);
+  --openui-shadow-s: none; --openui-shadow-m: none;
+  --openui-radius-2xl: var(--radius-card); --openui-radius-xl: var(--radius-frame); --openui-radius-l: var(--radius-row); }
+/* The page's own button and form styles must not leak into OpenUI's components. */
+.genui button { min-height: 0; margin: 0; }
+.genui :focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
+.genui-failed { color: var(--muted-fg); font-size: 15px; }
+/* OpenUI's loading spinner animation (the page's CSP blocks the one it injects). */
+@keyframes openui-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+/* Tables: no outer frame; a mono header with a stronger rule (as elsewhere on the page). */
+.genui .openui-table-container { border: 0; border-radius: 0; background: transparent; }
+.genui .openui-table th { font-family: var(--font-mono); font-weight: 400; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--tyrian); border-bottom: 1px solid var(--aubergine); }
+/* OpenUI labels follow-ups "Related Queries"; show the house kicker instead. */
+.genui .openui-follow-up-block__header { font-size: 0; }
+.genui .openui-follow-up-block__header::before { content: "Ask next"; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--tyrian); }

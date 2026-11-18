@@ -38,6 +38,10 @@ const STATIC = {
   '/pcm-worklet.js': ['pcm-worklet.js', 'text/javascript'],
   '/talking-portrait.js': ['talking-portrait.js', 'text/javascript'],
   '/tommy.js': ['tommy.js', 'text/javascript'],
+  '/openui-reply.js': ['openui-reply.js', 'text/javascript'],
+  // OpenUI renderer for the final chat; copied from @openuidev/browser-bundle by `npm run build:openui`.
+  '/vendor/openui/openui-bundle.min.js': ['vendor/openui/openui-bundle.min.js', 'text/javascript'],
+  '/vendor/openui/openui-styles.css': ['vendor/openui/openui-styles.css', 'text/css'],
   '/assets/tommy.png': ['../assets/tommy.png', 'image/png'],
   '/styles.css': ['styles.css', 'text/css'],
   // TATOMA brand fonts, copied from the TATOMA Design System.
@@ -680,7 +684,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
             const voiceMode = input.voice === true;
             const output = await model.chat(problem ? problemMessages(s, problem, action, userText, { voice: voiceMode })
               : twinMessages(s, action, userText, { includeSample: action === 'demo' || selected?.kind === 'draft', voice: voiceMode }), {
-              signal, onToken: value => emit({ type: 'token', text: value })
+              // Room for an optional OpenUI block after the words (TWIN_VISUALS in lib/prompts.mjs).
+              signal, maxOutputTokens: 1600, onToken: value => emit({ type: 'token', text: value })
             });
             signal.throwIfAborted();
             // Commit only a completed exchange, never an interrupted half-answer.

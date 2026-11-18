@@ -2,6 +2,7 @@ import { createSilenceDetector } from '/voice-activity.js';
 import { LIVE, toPcm16, sessionUpdate, appendAudio, endAudio, liveStart, reduceLive } from '/live-transcript.js';
 import { createTalkingPortrait } from '/talking-portrait.js';
 import { createTommy } from '/tommy.js';
+import { splitReply, spokenPart, createVisual } from '/openui-reply.js';
 const $ = id => document.getElementById(id);
 let token = '', session = null, job = null, localStage = '', pending = '', reviewKey = '', activeProblem = '';
 let user = null, accountsEnabled = false; // A signed-in account (saved twin), or null for a guest.
@@ -36,8 +37,9 @@ function setLoading(title, detail = 'Please wait while this step finishes.') {
 function busy() {
   const waiting = Boolean(job);
 
+  // OpenUI blocks manage their own controls; a click there while busy explains itself (sendFromVisual).
   document.querySelectorAll('button,input,textarea,select').forEach(el => {
-    el.disabled = waiting;
+    if (!el.closest('.genui')) el.disabled = waiting;
   });
 
   // Do not trap the participant in a loading screen.
@@ -78,17 +80,63 @@ async function run(work) {
     }
   }
 }
-function bubble(container, message, label) {
+// Drawn OpenUI blocks per thread, keyed by their source, so re-rendering keeps them (and their open sections) alive.
+const visuals = new Map();
+// A future-self reply in the final chat may end with an OpenUI block (public/openui-reply.js); the interview never does.
+const hasVisuals = container => container.id === 'twin-thread';
+// A follow-up or clickable item sends its text as the participant's next message. It always lands in the message box,
+// so nothing is lost silently; when it cannot be sent right away, the reason is shown next to the chat.
+function sendFromVisual(text) {
+  if ((localStage || session?.stage) !== 'twin') return;
+  const message = text.slice(0, 600), note = $('visual-note');
+  $('message').value = message;
+  const said = currentThread().filter(item => item.role === 'user').length;
+  const reason = job ? 'Your future self is still replying. Press Send when it has finished.'
+    : said >= threadLimit() ? (activeProblem
+      ? 'This problem session has reached its limit. Pick another problem or go back to the conversation.'
+      : 'This conversation has reached its limit of eight exchanges.') : '';
+  note.textContent = reason; note.hidden = !reason;
+  if (reason) { note.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); return; }
+  run(async signal => {
+    try { await talk('say', message, signal); }
+    finally { if (!$('error').hidden) $('error').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+  });
+}
+function bubble(container, message, label, { streaming = false } = {}) {
   const card = document.createElement('div');
   card.className = `bubble ${message.role}`;
   const name = document.createElement('strong'); name.textContent = message.role === 'user' ? 'You' : label;
-  const paragraph = document.createElement('p'); paragraph.textContent = message.content;
+  const paragraph = document.createElement('p');
   card.append(name, paragraph); container.append(card);
-  return paragraph;
+  const show = (content, live) => {
+    if (message.role !== 'assistant' || !hasVisuals(container)) { paragraph.textContent = content; return; }
+    const { words, ui } = splitReply(content, { streaming: live });
+    paragraph.textContent = words || (ui ? '' : content);
+    paragraph.hidden = !paragraph.textContent;
+    if (!ui) return;
+    if (!card.visual) {
+      const reused = takeVisual(container, ui);
+      card.visual = reused || createVisual(Object.assign(document.createElement('div'), { className: 'genui' }), { onMessage: sendFromVisual });
+      card.append(card.visual.element);
+    }
+    card.visual.source = ui;
+    card.visual.update(ui, live);
+  };
+  show(message.content, streaming);
+  return { paragraph, update: content => show(content, true), card };
+}
+function takeVisual(container, ui) {
+  const list = visuals.get(container) || [], index = list.findIndex(visual => visual.source === ui);
+  return index < 0 ? null : list.splice(index, 1)[0];
 }
 function thread(id, messages, label) {
-  const container = $(id); container.replaceChildren();
+  const container = $(id);
+  // Keep the previous drawings available for reuse, then free the ones no message needs any more.
+  visuals.set(container, [...container.querySelectorAll('.bubble')].map(card => card.visual).filter(Boolean));
+  container.replaceChildren();
   messages.forEach(message => bubble(container, message, label));
+  (visuals.get(container) || []).forEach(visual => visual.unmount());
+  visuals.delete(container);
   container.scrollTop = container.scrollHeight;
 }
 function renderSuggestions() {
@@ -343,7 +391,7 @@ function nextSpeech() {
   if (place?.panel === 'clarify') return question ? { key: `clarify:${question.id}`, text: question.question, listen: true } : null;
   const list = currentThread(), last = list.at(-1);
   if (place?.panel === 'twin' && last?.role === 'assistant') {
-    return { key: `twin:${session.profileVersion}:${activeProblem}:${list.length}`, text: last.content,
+    return { key: `twin:${session.profileVersion}:${activeProblem}:${list.length}`, text: spokenPart(last.content),
       listen: list.filter(message => message.role === 'user').length < threadLimit() };
   }
   return null;
@@ -620,7 +668,7 @@ function render() {
   if (stage === 'review') renderProfileEditor();
   thread('intake-thread', session.intake, 'Your interviewer');
   thread('twin-thread', currentThread(), 'Possible future self');
-  if (pending) bubble($('twin-thread'), { role: 'assistant', content: pending }, 'Possible future self');
+  if (pending) bubble($('twin-thread'), { role: 'assistant', content: pending }, 'Possible future self', { streaming: true });
   $('twin-title').textContent = `${session.name}, a little further ahead.`;
   $('facts').replaceChildren(...(session.profile?.entries || []).map(fact => {
     const item = document.createElement('li'); item.textContent = `${fact.text}${fact.scope ? ` (${fact.scope})` : ''}`; return item;
@@ -823,6 +871,7 @@ async function talk(action, text, signal, suggestionId = '') {
   );
 
   stopVoice(); // A new message or button replaces anything being read or recorded.
+  $('visual-note').hidden = true;
   const selected = action === 'suggestion'
     ? session.suggestions.find(item => item.id === suggestionId) : null;
   if (action === 'suggestion' && !selected) throw new Error('This button is no longer available.');
@@ -830,7 +879,7 @@ async function talk(action, text, signal, suggestionId = '') {
   if (action !== 'open') bubble($('twin-thread'), {
     role: 'user', content: selected?.label || text
   }, 'You');
-  const paragraph = bubble($('twin-thread'), { role: 'assistant', content: '…' }, 'Possible future self');
+  const reply = bubble($('twin-thread'), { role: 'assistant', content: '…' }, 'Possible future self', { streaming: true });
   const response = await fetch('/api/twin', {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', 'X-Future-Self': '1', Authorization: `Bearer ${token}` },
@@ -847,7 +896,7 @@ async function talk(action, text, signal, suggestionId = '') {
           'The answer is appearing below as it is generated.'
         );
       }
-      pending += event.text; paragraph.textContent = pending;
+      pending += event.text; reply.update(pending);
       $('twin-thread').scrollTop = $('twin-thread').scrollHeight;
     }
     if (event.type === 'error') throw new Error(event.error);
@@ -855,7 +904,9 @@ async function talk(action, text, signal, suggestionId = '') {
   }
   signal.throwIfAborted();
   if (!complete) throw new Error('The stream was interrupted. Retry your message.');
-  $('message').value = ''; pending = ''; render();
+  // Keep a follow-up that was clicked while this reply was still coming in (see sendFromVisual).
+  if ($('visual-note').hidden) $('message').value = '';
+  pending = ''; render();
 }
 // A failed interviewer response is retried quietly (the answer is already kept), at most twice and within
 // the server's per-turn budget. Only if that also fails does the Retry button appear.

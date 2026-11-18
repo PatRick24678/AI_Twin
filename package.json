@@ -2,13 +2,24 @@
   "name": "tatoma-future-self-local",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.13.0" },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "node --env-file=.env --import=./lib/load-secrets.mjs --watch server.mjs",
     "start": "node --env-file=.env --import=./lib/load-secrets.mjs server.mjs",
     "test": "node --test",
     "init:storage": "node scripts/init-storage.mjs",
     "create-admin": "node --env-file=.env --import=./lib/load-secrets.mjs scripts/create-admin.mjs",
-    "check:secrets": "node --import=./lib/load-secrets.mjs -e \"console.log('API key loaded; value hidden.')\""
+    "check:secrets": "node --import=./lib/load-secrets.mjs -e \"console.log('API key loaded; value hidden.')\"",
+    "build:openui": "node scripts/build-openui.mjs"
+  },
+  "devDependencies": {
+    "@openuidev/browser-bundle": "0.2.2",
+    "@openuidev/cli": "0.6.3",
+    "@openuidev/react-lang": "1.1.1",
+    "@openuidev/react-ui": "0.18.7",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
   }
 }
