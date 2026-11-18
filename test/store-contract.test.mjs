@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createCryptoBox, newDataKey } from '../lib/crypto-box.mjs';
 import { openStore, RETENTION } from '../lib/store.mjs';
-import { openPostgresStore } from '../lib/store-postgres.mjs';
+import { openPostgresStore, connectionUrl } from '../lib/store-postgres.mjs';
 import { createStore } from '../server.mjs';
 
 // The same behaviour from both stores. SQLite always runs; Postgres only when TEST_DATABASE_URL names a test
@@ -59,6 +59,13 @@ for (const [name, open] of backends) {
     assert.equal(await store.findSession('old'), undefined);
   });
 }
+
+test('libpq-only settings in a Neon connection string are not sent to the server as session parameters', () => {
+  const url = connectionUrl('postgresql://user:FICTIONAL@ep-example-pooler.eu-central-1.aws.neon.tech/app?sslmode=require&channel_binding=require&application_name=x');
+  assert.equal(new URL(url).search, '?application_name=x');
+  assert.equal(new URL(url).hostname, 'ep-example-pooler.eu-central-1.aws.neon.tech');
+  assert.throws(() => connectionUrl('mysql://user:x@db.example.test/app'), /postgres/);
+});
 
 test('createStore picks hosted Postgres when DATABASE_URL is set, and needs the encryption key', async () => {
   const key = newDataKey();
