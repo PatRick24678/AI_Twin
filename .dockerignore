@@ -1,0 +1,17 @@
+# Never part of the container: local settings, secrets, history, tests and documentation.
+.git
+.gitignore
+.gcloudignore
+.dockerignore
+Dockerfile
+.env
+.env.*
+secrets.env
+*.secrets.env
+.secrets/
+node_modules/
+docs/
+test/
+test-support/
+session-notes-*.json
+*.log

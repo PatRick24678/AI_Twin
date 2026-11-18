@@ -1,0 +1,16 @@
+# Never uploaded to Google Cloud Build by `gcloud run deploy --source .`:
+# local settings, secrets, history, dependencies (installed in the build), tests and documentation.
+.gcloudignore
+.git
+.gitignore
+.env
+.env.*
+secrets.env
+*.secrets.env
+.secrets/
+node_modules/
+docs/
+test/
+test-support/
+session-notes-*.json
+*.log

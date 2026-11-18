@@ -400,3 +400,62 @@ Open before real participants:
 - Failed profile responses now log "Profile response rejected: ..." like the interview.
 - Two tests that expected a thrown error were rewritten to assert the same safeguards on the outcome: unrelated entry unchanged, fabricated quote confirms nothing, bare yes cannot rewrite, extra fields still throw. This was a deliberate behaviour change, reported to the user.
 - npm.cmd test -> 185/185 pass.
+
+## Hosting: Google Cloud Run + Neon Postgres (18 Nov 2026, branch `test`)
+User decisions in planning:
+- Host the proof of concept for free, with a hosted database. Chosen for user experience: **Cloud Run**
+  (europe-west4), where the server wakes in about 1–2 s.
+- Ruled out:
+  - Vercel: serverless, so it needs a stateless rewrite and storing guests and samples.
+  - Cloudflare Workers Free: not a Node runtime, and a 10 ms CPU limit.
+  - Render Free: about 1 minute to wake.
+  - Fly.io, Railway and Koyeb: no free plan.
+- Database: **Neon** (Frankfurt). Access: a **shared access code**.
+- The work happens on `test`, fast-forwarded from `Pat` (94f99f1), so the working build stays untouched.
+  `origin/Evy` has 2 newer commits (OpenUI in the final chat, wallpaper). They were not included; they merge cleanly.
+- Local Node is now **v26.13.1**, not 24. Baseline before the changes: `npm.cmd test` → **204/204 pass**.
+
+1. `d8c23cf`, **hosting-ready server.** All settings are optional and default to the old local behaviour:
+   - `PUBLIC_ORIGINS`: the allowed Host/Origin values.
+   - `HOST`: the listen address.
+   - `TRUST_PROXY`: X-Forwarded-For entries from the right.
+   - `ACCESS_CODE`: required for `/api/session` and sign-up, with a hashed constant-time compare, throttled per
+     visitor. The UI field appears only when the code is required.
+   - `AI_CONCURRENCY`: replaces the global `modelBusy` lock with a counter. The default 1 keeps
+     `test/interviewer.test.mjs:342` unchanged.
+   - `MAX_SESSIONS`.
+   - Also: HSTS with secure cookies, a good `/api/health` result cached for 10 minutes, purge on a request once a day
+     has passed, and a graceful SIGTERM.
+   - New `test/hosting.test.mjs`. Result: **211/211 pass**.
+2. `6119a7d`, **hosted database.**
+   - New `lib/store-postgres.mjs`, using `postgres` 3.4.9: the first npm dependency, with no transitive dependencies.
+     Version 4 is three weeks old, so it was avoided.
+   - The store interface is now async. The SQLite store wraps its unchanged synchronous methods.
+   - `createStore()` uses Postgres when `DATABASE_URL` is set.
+   - An account's change is now saved **before** the reply (`json()` and the twin stream's `done` event wait for it).
+     This replaces the save on `finish`.
+   - `load-secrets` reads an optional `DATABASE_URL`. `create-admin` uses the configured store.
+     `init:storage --production` writes a separate production key to `production.env` (outside the repo).
+   - Test changes:
+     - `store.test.mjs` and `accounts.test.mjs` only gained `await`.
+     - `assert.throws` became `assert.rejects` for the integrity check, which is now async. The same safeguard is
+       asserted.
+     - The purge test awaits `server.purged`.
+     - New: `test/store-contract.test.mjs` runs on SQLite, and on Postgres only with `TEST_DATABASE_URL`. A slow-save
+       ordering test was added.
+   - Result: **215/215 pass**.
+   - `create-admin` and `init-storage --production` were checked by hand against a temporary folder and a temporary
+     SQLite database: create, duplicate, mismatch, and idempotent setup.
+3. **Container and runbook:** `Dockerfile` (`node:26-slim`), `.dockerignore`, `.gcloudignore`, `docs/DEPLOYMENT.md`,
+   README Hosting section, `PRIVACY.md` (hosted processors and backups) and `.env.example`.
+
+Not verified:
+- `lib/store-postgres.mjs` has **not run against a real Postgres**. Starting a local throwaway Postgres (PGlite) was
+  not approved in this session. Run the contract test against Neon `dev` (see DEPLOYMENT.md).
+- The Docker build: Docker isn't installed locally, and Cloud Build builds it during the first deploy.
+- Anything on Cloud Run:
+  - the `X-Forwarded-For` position (`TRUST_PROXY=1`);
+  - long portrait requests, streaming and wake-up times;
+  - the free-tier coverage in europe-west4.
+- The user still has to create the Google Cloud and Neon accounts, the secrets and the first deploy (DEPLOYMENT.md
+  steps 1–8). Whose billing card to use is undecided.

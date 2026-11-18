@@ -6,7 +6,13 @@ The current default is `claude-haiku-5-5`. This is not an offline application.
 
 ## Requirements and startup
 
-Use Node.js 22.12 or newer. There are no npm dependencies in this version.
+Use Node.js 22.13 or newer. The one npm dependency is `postgres` (for the hosted database), so install once after
+pulling:
+
+```powershell
+npm.cmd install
+```
+
 The previously added `lib/load-secrets.mjs` startup module must remain in place, together
 with the `--import=./lib/load-secrets.mjs` flags in the start/dev scripts.
 
@@ -151,7 +157,7 @@ To enable it, add `OPENAI_API_KEY=...` to the same external `secrets.env` (or th
 Accounts and saved twins are being added in increments; see `PRIVACY.md` for what is stored and why.
 
 **Storage layer** (increment 1, not yet wired into the app):
-- Node's built-in SQLite (`node:sqlite`, Node ≥ 22.13). There are still no npm dependencies.
+- Node's built-in SQLite (`node:sqlite`, Node ≥ 22.13), for local use. The hosted version uses Postgres (see Hosting).
 - `lib/store.mjs` is the only module that touches the database. It covers:
   - users, login sessions and one twin document per user;
   - deletion that cascades;
@@ -212,6 +218,24 @@ What an admin can do:
 **Optional settings:**
 - `FUTURE_SELF_DB` moves the database file. Cloud-synced folders are refused.
 - `FUTURE_SELF_SECURE_COOKIES=1` adds `Secure` to the cookie once the app runs over HTTPS.
+
+## Hosting (Google Cloud Run + Neon Postgres)
+
+The step-by-step setup is in `docs/DEPLOYMENT.md`. In short:
+- **The same server, in a container.** The `Dockerfile` runs the normal server; Cloud Run builds and runs one
+  instance, which sleeps when idle.
+- **Hosted database.** With `DATABASE_URL` set, saved accounts live in Neon Postgres (`lib/store-postgres.mjs`)
+  instead of the local SQLite file. It uses the same encryption, so the database holds ciphertext only. This adds the
+  project's first npm dependency, `postgres`; run `npm.cmd install` once after pulling.
+- **Hosting settings.** All of these are optional; without them the app stays local-only:
+  - `PUBLIC_ORIGINS`: the https address(es) the server answers to.
+  - `ACCESS_CODE`: a shared code needed for guest sessions and new accounts. Existing accounts just log in.
+  - `TRUST_PROXY`: read the visitor address for throttling from the proxy header.
+  - `AI_CONCURRENCY`: parallel AI requests (locally 1, as before).
+  - `MAX_SESSIONS`: how many sessions can be open at once.
+  - `HOST`: the address the server listens on.
+- **Saving.** An account's change is saved before its reply is sent. A hosted server may get no CPU after a
+  response, so saving afterwards is not safe there.
 
 ## Model-led interview — increment 2
 
