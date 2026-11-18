@@ -40,7 +40,7 @@ async function start(t, store) {
     if (set) cookie = readCookie(set);
     return { status: response.status, body: await response.json(), setCookie: set };
   }
-  return { call, stop, forget: () => { cookie = ''; } };
+  return { call, stop, purged: server.purged, forget: () => { cookie = ''; } };
 }
 const signup = (call, email = 'alex@example.test') => call('/api/auth/signup', { body: { email, password: PASSWORD, name: 'Alex', consent: true } });
 
@@ -65,10 +65,10 @@ test('sign-up creates an account with a protected login cookie and an empty twin
   assert.deepEqual(made.body.user, { email: 'alex@example.test', role: 'participant' });
   assert.equal(made.body.session.name, 'Alex');
   assert.match(made.setCookie, /HttpOnly/); assert.match(made.setCookie, /SameSite=Strict/);
-  const user = store.findUserByEmail('alex@example.test');
+  const user = await store.findUserByEmail('alex@example.test');
   assert.equal(user.consentVersion, AUTH.consentVersion);
   assert.ok(!user.passwordHash.includes(PASSWORD));
-  assert.equal(store.loadTwin(user.id).name, 'Alex');
+  assert.equal((await store.loadTwin(user.id)).name, 'Alex');
   const again = await signup(call, 'ALEX@example.test');
   assert.equal(again.status, 409); assert.doesNotMatch(again.body.error, /exists|taken/);
 });
@@ -120,7 +120,7 @@ test('guests are never stored, pasted samples never are, and without a key accou
   const store = openStore({ path: ':memory:', box }), { call } = await start(t, store);
   const guest = await call('/api/session', { body: { name: 'Guest', consent: true } });
   await call('/api/interview/next', { body: { requestId: guest.body.session.interview.requestId }, token: guest.body.token });
-  assert.deepEqual(store.listUsers(), []);
+  assert.deepEqual(await store.listUsers(), []);
   const saved = savedDocument({ name: 'A', sample: { text: 'CONFIDENTIAL CLIENT TEXT', context: 'Email' },
     profileDraft: { sample: { text: 'CONFIDENTIAL CLIENT TEXT' } }, controller: {}, metrics: { inputTokens: 1 } });
   assert.ok(!JSON.stringify(saved).includes('CONFIDENTIAL'));
@@ -148,11 +148,11 @@ async function confirmedTwin(call, token, start) {
 test('once the profile is confirmed, the raw interview is no longer saved; quotes stay with the profile', async t => {
   const store = openStore({ path: ':memory:', box }), { call } = await start(t, store);
   const made = await signup(call);
-  const unfinished = store.loadTwin(store.findUserByEmail('alex@example.test').id);
+  const unfinished = await store.loadTwin((await store.findUserByEmail('alex@example.test')).id);
   assert.equal(unfinished.interview.status, 'thinking'); // Before confirmation the interview is kept to resume it.
   const confirmed = await confirmedTwin(call, made.body.token, made.body.session);
   assert.equal(confirmed.status, 200);
-  const saved = store.loadTwin(store.findUserByEmail('alex@example.test').id), text = JSON.stringify(saved);
+  const saved = await store.loadTwin((await store.findUserByEmail('alex@example.test')).id), text = JSON.stringify(saved);
   assert.deepEqual([saved.answers, saved.intake, saved.interview.messages, saved.interview.observations, saved.profileDraft.entries], [[], [], [], [], []]);
   assert.ok(!text.includes('Fictional test question')); // The interviewer's questions are gone too.
   assert.ok(!text.includes('CONFIDENTIAL'));
@@ -171,12 +171,12 @@ test('participants can export their data and delete their account with their pas
   assert.equal((await call('/api/account/delete', { body: { password: 'not my passphrase at all' } })).status, 403);
   const gone = await call('/api/account/delete', { body: { password: PASSWORD } });
   assert.equal(gone.status, 200); assert.match(gone.setCookie, /Max-Age=0/);
-  assert.equal(store.findUserByEmail('alex@example.test'), undefined);
+  assert.equal(await store.findUserByEmail('alex@example.test'), undefined);
   assert.equal((await call('/api/session', { token: made.body.token })).status, 401);
   forget();
   assert.equal((await call('/api/account/export')).status, 401);
   assert.equal((await call('/api/auth/login', { body: { email: 'alex@example.test', password: PASSWORD } })).status, 401);
-  assert.deepEqual(store.listAudit().map(entry => entry.action), ['account_created', 'data_exported', 'account_deleted']);
+  assert.deepEqual((await store.listAudit()).map(entry => entry.action), ['account_created', 'data_exported', 'account_deleted']);
 });
 
 test('an interview left unfinished for 30 days is removed at start-up; confirmed twins and accounts stay', async t => {
@@ -185,22 +185,23 @@ test('an interview left unfinished for 30 days is removed at start-up; confirmed
   await signup(app.call, 'unfinished@example.test');
   await app.stop(); store.close();
   store = openStore({ path, box });
-  const unfinished = store.findUserByEmail('unfinished@example.test');
-  store.saveTwin(store.createUser({ email: 'done@example.test', passwordHash: 'x', consentVersion: 'test' }).id, { profile: { entries: [] } });
+  const unfinished = await store.findUserByEmail('unfinished@example.test');
+  await store.saveTwin((await store.createUser({ email: 'done@example.test', passwordHash: 'x', consentVersion: 'test' })).id, { profile: { entries: [] } });
   store.close();
   // Back-date the confirmed twin as well: only its content decides whether it stays.
   const { DatabaseSync } = await import('node:sqlite');
   const raw = new DatabaseSync(path); raw.prepare('UPDATE twins SET updated_at = ?').run(old); raw.close();
   store = openStore({ path, box }); app = await start(t, store);
-  assert.equal(store.loadTwin(unfinished.id), null);
-  assert.ok(store.findUserByEmail('unfinished@example.test'));
-  assert.deepEqual(store.loadTwin(store.findUserByEmail('done@example.test').id), { profile: { entries: [] } });
+  await app.purged;
+  assert.equal(await store.loadTwin(unfinished.id), null);
+  assert.ok(await store.findUserByEmail('unfinished@example.test'));
+  assert.deepEqual(await store.loadTwin((await store.findUserByEmail('done@example.test')).id), { profile: { entries: [] } });
   await app.stop(); store.close();
 });
 
 test('admins manage accounts without ever receiving content; reset codes are one-time and never logged', async t => {
   const store = openStore({ path: ':memory:', box }), { call, forget } = await start(t, store);
-  store.createUser({ email: 'admin@example.test', passwordHash: await hashPassword(PASSWORD), role: 'admin', consentVersion: 'test' });
+  await store.createUser({ email: 'admin@example.test', passwordHash: await hashPassword(PASSWORD), role: 'admin', consentVersion: 'test' });
   const alex = await signup(call);
   let state = await call('/api/interview/next', { body: { requestId: alex.body.session.interview.requestId }, token: alex.body.token });
   await call('/api/answer', { body: { questionId: state.body.interview.questionId, text: 'PRIVATE_DETAIL about my work' }, token: alex.body.token });
@@ -231,8 +232,8 @@ test('admins manage accounts without ever receiving content; reset codes are one
   forget();
   await call('/api/auth/login', { body: { email: 'admin@example.test', password: PASSWORD } });
   assert.equal((await call('/api/admin/accounts/delete', { body: { userId: alexId } })).status, 200);
-  assert.equal(store.findUserByEmail('alex@example.test'), undefined);
+  assert.equal(await store.findUserByEmail('alex@example.test'), undefined);
   const audit = (await call('/api/admin/accounts')).body.audit;
   assert.deepEqual(audit.slice(0, 3).map(entry => entry.action), ['account_deleted', 'password_reset', 'reset_code_issued']);
-  assert.ok(!JSON.stringify(store.listAudit()).includes(code) && !JSON.stringify(audit).includes('alex@'));
+  assert.ok(!JSON.stringify(await store.listAudit()).includes(code) && !JSON.stringify(audit).includes('alex@'));
 });

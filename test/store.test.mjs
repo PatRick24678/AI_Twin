@@ -39,74 +39,74 @@ test('the database lives outside the repo and never in a cloud-synced folder', (
   assert.throws(() => openStore({ path: ':memory:' }), /DATA_ENCRYPTION_KEY/);
 });
 
-test('accounts: unique case-insensitive email, encrypted address, generic duplicate result', () => {
+test('accounts: unique case-insensitive email, encrypted address, generic duplicate result', async () => {
   const store = openStore({ path: ':memory:', box });
-  const alex = account(store);
+  const alex = await account(store);
   assert.equal(alex.email, 'alex@example.test');
   assert.equal(alex.role, 'participant');
-  assert.equal(account(store, ' ALEX@example.test '), null);
-  assert.equal(store.findUserByEmail('alex@EXAMPLE.test').id, alex.id);
-  assert.equal(store.findUserByEmail('nobody@example.test'), undefined);
-  store.setResetCode(alex.id, 'hash', 123);
-  store.createSession({ idHash: 's1', userId: alex.id, expiresAt: Date.now() + DAY });
-  store.setPassword(alex.id, 'scrypt$new');
-  assert.equal(store.findUser(alex.id).passwordHash, 'scrypt$new');
-  assert.equal(store.findUser(alex.id).resetHash, null);
-  assert.equal(store.findSession('s1'), undefined); // A new password signs out everywhere.
+  assert.equal(await account(store, ' ALEX@example.test '), null);
+  assert.equal((await store.findUserByEmail('alex@EXAMPLE.test')).id, alex.id);
+  assert.equal(await store.findUserByEmail('nobody@example.test'), undefined);
+  await store.setResetCode(alex.id, 'hash', 123);
+  await store.createSession({ idHash: 's1', userId: alex.id, expiresAt: Date.now() + DAY });
+  await store.setPassword(alex.id, 'scrypt$new');
+  assert.equal((await store.findUser(alex.id)).passwordHash, 'scrypt$new');
+  assert.equal((await store.findUser(alex.id)).resetHash, null);
+  assert.equal(await store.findSession('s1'), undefined); // A new password signs out everywhere.
 });
 
-test('twins are saved encrypted, survive a restart and cannot be swapped between accounts', t => {
+test('twins are saved encrypted, survive a restart and cannot be swapped between accounts', async t => {
   const path = temporary(t);
   let store = openStore({ path, box });
-  const alex = account(store), sam = account(store, 'sam@example.test');
-  store.saveTwin(alex.id, { profile: { entries: ['ALEX_SECRET_DETAIL'] } });
-  store.saveTwin(sam.id, { profile: { entries: ['SAM_DETAIL'] } });
-  store.saveTwin(alex.id, { profile: { entries: ['ALEX_SECRET_DETAIL', 'second'] } });
+  const alex = await account(store), sam = await account(store, 'sam@example.test');
+  await store.saveTwin(alex.id, { profile: { entries: ['ALEX_SECRET_DETAIL'] } });
+  await store.saveTwin(sam.id, { profile: { entries: ['SAM_DETAIL'] } });
+  await store.saveTwin(alex.id, { profile: { entries: ['ALEX_SECRET_DETAIL', 'second'] } });
   store.close();
   // No personal content or email in the file itself.
   const bytes = readFileSync(path).toString('latin1');
   for (const plain of ['ALEX_SECRET_DETAIL', 'alex@example.test', 'SAM_DETAIL']) assert.ok(!bytes.includes(plain), plain);
   store = openStore({ path, box });
-  assert.deepEqual(store.loadTwin(alex.id), { profile: { entries: ['ALEX_SECRET_DETAIL', 'second'] } });
+  assert.deepEqual(await store.loadTwin(alex.id), { profile: { entries: ['ALEX_SECRET_DETAIL', 'second'] } });
   store.close();
   const raw = new DatabaseSync(path);
   assert.equal(raw.prepare('PRAGMA user_version').get().user_version, 1);
   raw.prepare('UPDATE twins SET data_enc = (SELECT data_enc FROM twins WHERE user_id = ?) WHERE user_id = ?').run(sam.id, alex.id);
   raw.close();
   store = openStore({ path, box });
-  assert.throws(() => store.loadTwin(alex.id), /integrity/);
+  await assert.rejects(store.loadTwin(alex.id), /integrity/);
   store.close();
 });
 
-test('deleting an account removes its sessions and twin; the audit log keeps no content', () => {
+test('deleting an account removes its sessions and twin; the audit log keeps no content', async () => {
   const store = openStore({ path: ':memory:', box });
-  const alex = account(store);
-  store.saveTwin(alex.id, { profile: 'x' });
-  store.createSession({ idHash: 'h', userId: alex.id, expiresAt: Date.now() + DAY });
-  assert.equal(store.listUsers()[0].hasTwin, true);
-  assert.ok(!JSON.stringify(store.listUsers()).includes('profile'));
-  assert.equal(store.deleteUser(alex.id), true);
-  assert.deepEqual([store.findUser(alex.id), store.loadTwin(alex.id), store.findSession('h')], [undefined, null, undefined]);
-  assert.deepEqual(store.listAudit().map(a => a.action), ['account_created', 'account_deleted']);
-  assert.ok(!JSON.stringify(store.listAudit()).includes('example'));
+  const alex = await account(store);
+  await store.saveTwin(alex.id, { profile: 'x' });
+  await store.createSession({ idHash: 'h', userId: alex.id, expiresAt: Date.now() + DAY });
+  assert.equal((await store.listUsers())[0].hasTwin, true);
+  assert.ok(!JSON.stringify(await store.listUsers()).includes('profile'));
+  assert.equal(await store.deleteUser(alex.id), true);
+  assert.deepEqual([await store.findUser(alex.id), await store.loadTwin(alex.id), await store.findSession('h')], [undefined, null, undefined]);
+  assert.deepEqual((await store.listAudit()).map(a => a.action), ['account_created', 'account_deleted']);
+  assert.ok(!JSON.stringify(await store.listAudit()).includes('example'));
 });
 
-test('purge deletes inactive participants, expired sessions and old audit entries, never admins', () => {
+test('purge deletes inactive participants, expired sessions and old audit entries, never admins', async () => {
   let clock = Date.parse('2026-01-01');
   const store = openStore({ path: ':memory:', box, now: () => clock });
-  const idle = account(store);
-  const admin = store.createUser({ email: 'admin@example.test', passwordHash: 'x', role: 'admin', consentVersion: 'test-1' });
-  store.createSession({ idHash: 'old', userId: admin.id, expiresAt: clock + DAY });
+  const idle = await account(store);
+  const admin = await store.createUser({ email: 'admin@example.test', passwordHash: 'x', role: 'admin', consentVersion: 'test-1' });
+  await store.createSession({ idHash: 'old', userId: admin.id, expiresAt: clock + DAY });
   clock += (RETENTION.inactiveDays - 1) * DAY;
-  const active = account(store, 'active@example.test');
-  assert.equal(store.purge(), 0);
+  const active = await account(store, 'active@example.test');
+  assert.equal(await store.purge(), 0);
   clock += 2 * DAY;
-  assert.equal(store.purge(), 1);
-  assert.deepEqual([store.findUser(idle.id), Boolean(store.findUser(admin.id)), Boolean(store.findUser(active.id))], [undefined, true, true]);
-  assert.equal(store.findSession('old'), undefined);
+  assert.equal(await store.purge(), 1);
+  assert.deepEqual([await store.findUser(idle.id), Boolean(await store.findUser(admin.id)), Boolean(await store.findUser(active.id))], [undefined, true, true]);
+  assert.equal(await store.findSession('old'), undefined);
   clock += RETENTION.auditDays * DAY;
-  store.purge();
+  await store.purge();
   // Entries older than the retention window are gone; the one exactly at its edge stays.
-  assert.ok(store.listAudit().length > 0);
-  assert.ok(store.listAudit().every(entry => entry.at >= clock - RETENTION.auditDays * DAY));
+  assert.ok((await store.listAudit()).length > 0);
+  assert.ok((await store.listAudit()).every(entry => entry.at >= clock - RETENTION.auditDays * DAY));
 });

@@ -117,6 +117,27 @@ test('with AI_CONCURRENCY above 1, two participants are served at the same time'
   assert.equal((await pending).status, 200);
 });
 
+test('an account change is saved before the reply is sent, even when the database is slow', async t => {
+  const base = openStore({ path: ':memory:', box: createCryptoBox(newDataKey()) }), events = [];
+  t.after(() => base.close());
+  // A hosted database answers in milliseconds, and the server may get no CPU once a reply has ended.
+  const slow = { ...base, saveTwin: async (...args) => {
+    await new Promise(resolve => setTimeout(resolve, 100)); await base.saveTwin(...args); events.push('saved');
+  } };
+  const { call } = await start(t, hostingOptions({}), { store: slow });
+  const made = await call('/api/auth/signup', { body: { email: 'alex@example.test', password: 'a fictional long passphrase', name: 'Alex', consent: true } });
+  assert.equal(made.status, 201);
+  const cookie = made.headers['set-cookie'][0].split(';')[0];
+  events.length = 0;
+  const next = await call('/api/interview/next', { token: made.body.token, headers: { Cookie: cookie },
+    body: { requestId: made.body.session.interview.requestId } });
+  events.push('replied');
+  assert.equal(next.status, 200);
+  assert.deepEqual(events, ['saved', 'replied']);
+  const user = await base.findUserByEmail('alex@example.test');
+  assert.equal((await base.loadTwin(user.id)).interview.status, 'waiting'); // The saved twin has the new question.
+});
+
 test('MAX_SESSIONS caps open sessions', async t => {
   const { call } = await start(t, hostingOptions({ MAX_SESSIONS: '2' }));
   assert.equal((await call('/api/session', { body: guest() })).status, 201);

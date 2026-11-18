@@ -17,6 +17,7 @@ import { createPortraits, locateFace, PORTRAIT_LIMITS, DEFAULT_FACE_POINTS } fro
 import { generateSuggestions } from './lib/suggestions.mjs';
 import { createCryptoBox } from './lib/crypto-box.mjs';
 import { openStore, RETENTION } from './lib/store.mjs';
+import { openPostgresStore } from './lib/store-postgres.mjs';
 import { wordCount } from './lib/reply-style.mjs';
 import {
   AUTH, checkEmail, checkPassword, hashPassword, verifyPassword, newSessionId, hashToken, readCookie, sessionCookie, createThrottle,
@@ -45,9 +46,18 @@ const STATIC = {
   '/fonts/Canela-LightItalic.woff2': ['fonts/Canela-LightItalic.woff2', 'font/woff2'],
   '/fonts/TStar-Reg.woff': ['fonts/TStar-Reg.woff', 'font/woff']
 };
-function json(res, status, value) {
+// A saved twin is written BEFORE its reply goes out: a hosted server may get no CPU once a response has ended.
+async function saveFirst(res) {
+  const save = res.saveFirst;
+  res.saveFirst = null;
+  await save?.();
+}
+async function json(res, status, value) {
+  const text = JSON.stringify(value); // The state as it is now, even if the save below takes a moment.
+  await saveFirst(res);
+  if (res.destroyed || res.headersSent) return;
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(value));
+  res.end(text);
 }
 async function body(req) {
   requireThat(req.headers['content-type']?.startsWith('application/json'), 'Send JSON.', 415);
@@ -85,10 +95,16 @@ const VOICE_STAGE = 'Voice input is available while a question is waiting or in 
 const voiceAllowed = s => (s.stage === 'intake' && s.interview.status === 'waiting') ||
   (s.stage === 'clarify' && s.profileDraft?.status === 'clarifying') || s.stage === 'twin';
 // Saved accounts are optional: without DATA_ENCRYPTION_KEY the app runs guest-only, as before.
-export function createStore() {
-  if (!process.env.DATA_ENCRYPTION_KEY) return null;
-  try { return openStore({ box: createCryptoBox() }); }
-  catch (error) { console.warn(`[storage] ${error.message} Saved accounts are disabled.`); return null; }
+// With DATABASE_URL they are kept in hosted Postgres (Neon), otherwise in the local SQLite file.
+export function createStore(env = process.env) {
+  if (!env.DATA_ENCRYPTION_KEY) {
+    if (env.DATABASE_URL) console.warn('[storage] DATABASE_URL is set but DATA_ENCRYPTION_KEY is missing. Saved accounts are disabled.');
+    return null;
+  }
+  try {
+    const box = createCryptoBox(env.DATA_ENCRYPTION_KEY);
+    return env.DATABASE_URL ? openPostgresStore({ url: env.DATABASE_URL, box }) : openStore({ box });
+  } catch (error) { console.warn(`[storage] ${error.message} Saved accounts are disabled.`); return null; }
 }
 // What is saved for an account: the working state, minus what must never be stored.
 const SAVED = ['name', 'stage', 'answers', 'intake', 'interview', 'interviewUsage', 'interviewRetryAllowed', 'sample', 'claims',
@@ -185,16 +201,21 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
   // interviews left unfinished for 30 days (the account stays; its twin starts again). A hosted server may sleep
   // between requests, so a request also runs it once a day has passed.
   let lastPurge = 0;
-  function purge() {
+  async function purge() {
     lastPurge = Date.now();
-    store.purge();
-    for (const userId of store.staleTwins(RETENTION.unfinishedDays)) {
-      if (accounts.has(userId)) continue;
-      try { if (!store.loadTwin(userId)?.profile) { store.deleteTwin(userId); store.audit(null, 'unfinished_twin_deleted', userId); } }
-      catch { store.deleteTwin(userId); } // Unreadable (e.g. a lost key): nothing recoverable to keep.
-    }
+    try {
+      await store.purge();
+      for (const userId of await store.staleTwins(RETENTION.unfinishedDays)) {
+        if (accounts.has(userId)) continue;
+        let finished;
+        try { finished = Boolean((await store.loadTwin(userId))?.profile); }
+        catch { finished = false; } // Unreadable (e.g. a lost key): nothing recoverable to keep.
+        if (!finished) { await store.deleteTwin(userId); await store.audit(null, 'unfinished_twin_deleted', userId); }
+      }
+    } catch (error) { console.error(`[storage] Purge did not complete: ${error.message}`); }
   }
-  if (store) purge();
+  // Tests and callers can await the start-up purge; the server does not wait for it.
+  const purged = store ? purge() : Promise.resolve();
   const purgeTimer = store ? setInterval(purge, DAY).unref() : null;
   function workspace(name, userId = null) {
     return {
@@ -207,48 +228,54 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       portrait: null, portraitCount: 0, portraitSafetyId: randomUUID()
     };
   }
-  function persist(s) {
+  // Never throws: a failed save is logged (message only) and the participant keeps the working copy in memory.
+  async function persist(s) {
     if (!s.userId || !store) return;
-    try { store.saveTwin(s.userId, savedDocument(s)); }
+    try { await store.saveTwin(s.userId, savedDocument(s)); }
     catch (error) { console.error(`[storage] Could not save a twin: ${error.message}`); }
   }
   // The account's working copy: the one in memory, else the saved twin, else a new one.
-  function openWorkspace(user, name = '') {
-    const existing = accounts.get(user.id);
-    if (existing && sessions.has(existing)) return existing;
+  async function openWorkspace(user, name = '') {
+    const existing = () => { const token = accounts.get(user.id); return token && sessions.has(token) ? token : ''; };
+    if (existing()) return existing();
     requireThat(sessions.size < options.maxSessions, TOO_MANY, 429);
-    const saved = store.loadTwin(user.id);
+    const saved = await store.loadTwin(user.id);
+    if (existing()) return existing(); // Opened by a parallel request while the twin was loading.
     const s = saved ? { ...workspace(saved.name, user.id), ...saved, userId: user.id, touched: Date.now() }
       : workspace(name || user.email.split('@')[0], user.id);
     const token = randomBytes(32).toString('base64url');
     sessions.set(token, s); accounts.set(user.id, token);
-    if (!saved) persist(s);
+    if (!saved) await persist(s);
     return token;
   }
-  function signIn(res, user) {
+  async function signIn(res, user) {
     const id = newSessionId();
-    store.createSession({ idHash: hashToken(id), userId: user.id, expiresAt: Date.now() + AUTH.absoluteMs });
-    store.touchUser(user.id);
+    await store.createSession({ idHash: hashToken(id), userId: user.id, expiresAt: Date.now() + AUTH.absoluteMs });
+    await store.touchUser(user.id);
     res.setHeader('Set-Cookie', sessionCookie(id));
   }
   // The signed-in account for this request, or null. Expired or idle logins are removed.
-  function currentUser(req) {
+  async function currentUser(req) {
     const id = readCookie(req.headers.cookie);
     if (!store || !id) return null;
-    const idHash = hashToken(id), record = store.findSession(idHash), now = Date.now();
+    const idHash = hashToken(id), record = await store.findSession(idHash), now = Date.now();
     if (!record) return null;
-    if (now > record.expiresAt || now - record.lastSeenAt > AUTH.idleMs) { store.deleteSession(idHash); return null; }
-    store.touchSession(idHash); store.touchUser(record.userId);
-    return store.findUser(record.userId) || null;
+    if (now > record.expiresAt || now - record.lastSeenAt > AUTH.idleMs) { await store.deleteSession(idHash); return null; }
+    await store.touchSession(idHash); await store.touchUser(record.userId);
+    return await store.findUser(record.userId) || null;
   }
   // Admins manage accounts and have no twin of their own, so they get no working copy.
-  const signedIn = (user, token = user.role === 'admin' ? '' : openWorkspace(user)) =>
-    ({ user: { email: user.email, role: user.role }, token, session: token ? publicSession(sessions.get(token)) : null });
-  function dropWorkspace(token) {
+  async function signedIn(user, token) {
+    token ??= user.role === 'admin' ? '' : await openWorkspace(user);
+    return { user: { email: user.email, role: user.role }, token, session: token ? publicSession(sessions.get(token)) : null };
+  }
+  async function dropWorkspace(token) {
     const s = sessions.get(token);
     if (!s) return;
-    persist(s); s.controller?.abort(); s.speechController?.abort(); s.portraitController?.abort(); sessions.delete(token);
+    const saving = persist(s); // Takes its snapshot now, before the running requests are cancelled.
+    s.controller?.abort(); s.speechController?.abort(); s.portraitController?.abort(); sessions.delete(token);
     if (s.userId) accounts.delete(s.userId);
+    await saving;
   }
   async function useModel(s, res, work) {
     // A face being located takes a few seconds: an interview turn waits for it instead of failing.
@@ -399,8 +426,8 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       if (path.startsWith('/api/auth/')) {
         requireThat(store, 'Saved accounts are not set up on this server. Use "Try without saving".', 503);
         if (method === 'GET' && path === '/api/auth/me') {
-          const user = currentUser(req);
-          return json(res, 200, user ? signedIn(user) : { user: null });
+          const user = await currentUser(req);
+          return json(res, 200, user ? await signedIn(user) : { user: null });
         }
         requireThat(method === 'POST', 'Not found.', 404);
         const input = await body(req), address = `ip:${clientAddress(req)}`;
@@ -410,43 +437,43 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
           const email = checkEmail(input.email), name = text(input.name, 'Name or alias', 50, 1);
           checkPassword(input.password, email);
           throttle.check(`${address}:signup`);
-          const user = store.createUser({ email, passwordHash: await hashPassword(input.password), consentVersion: AUTH.consentVersion });
+          const user = await store.createUser({ email, passwordHash: await hashPassword(input.password), consentVersion: AUTH.consentVersion });
           if (!user) {
             throttle.fail(`${address}:signup`);
             throw new AppError(409, 'Could not create an account with these details. If you already have one, log in instead.');
           }
-          signIn(res, user);
-          return json(res, 201, signedIn(user, openWorkspace(user, name)));
+          await signIn(res, user);
+          return json(res, 201, await signedIn(user, await openWorkspace(user, name)));
         }
         // A one-time code from an admin replaces a forgotten password (no email service in the local phase).
         if (path === '/api/auth/reset') {
           const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
           throttle.check(`email:${email}`);
-          const user = email ? store.findUserByEmail(email) : null;
+          const user = email ? await store.findUserByEmail(email) : null;
           const valid = Boolean(user?.resetHash) && user.resetExpires > Date.now() && sameCode(input.code, user.resetHash);
           if (!valid) { throttle.fail(`email:${email}`); throw new AppError(401, 'That email and code do not match a valid reset code.'); }
           checkPassword(input.password, email);
-          store.setPassword(user.id, await hashPassword(input.password)); // Also ends every existing login.
-          dropWorkspace(accounts.get(user.id));
-          store.audit(user.id, 'password_reset', user.id);
+          await store.setPassword(user.id, await hashPassword(input.password)); // Also ends every existing login.
+          await dropWorkspace(accounts.get(user.id));
+          await store.audit(user.id, 'password_reset', user.id);
           throttle.succeed(`email:${email}`);
-          signIn(res, user);
-          return json(res, 200, signedIn(user));
+          await signIn(res, user);
+          return json(res, 200, await signedIn(user));
         }
         if (path === '/api/auth/login') {
           const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
           throttle.check(`email:${email}`);
-          const user = email ? store.findUserByEmail(email) : null;
+          const user = email ? await store.findUserByEmail(email) : null;
           // Same message and similar timing whether the email is unknown or the password is wrong.
           const valid = await verifyPassword(input.password, user?.passwordHash);
           if (!user || !valid) { throttle.fail(`email:${email}`); throw new AppError(401, 'Email or password is incorrect.'); }
           throttle.succeed(`email:${email}`);
-          signIn(res, user);
-          return json(res, 200, signedIn(user));
+          await signIn(res, user);
+          return json(res, 200, await signedIn(user));
         }
         if (path === '/api/auth/logout') {
-          const id = readCookie(req.headers.cookie), record = id && store.findSession(hashToken(id));
-          if (record) { store.deleteSession(hashToken(id)); dropWorkspace(accounts.get(record.userId)); }
+          const id = readCookie(req.headers.cookie), record = id && await store.findSession(hashToken(id));
+          if (record) { await store.deleteSession(hashToken(id)); await dropWorkspace(accounts.get(record.userId)); }
           res.setHeader('Set-Cookie', sessionCookie('', { clear: true }));
           return json(res, 200, { ok: true });
         }
@@ -454,15 +481,15 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       }
       if (path.startsWith('/api/account')) {
         requireThat(store, 'Saved accounts are not set up on this server.', 503);
-        const user = currentUser(req);
+        const user = await currentUser(req);
         requireThat(user, 'Log in first.', 401);
         // Right of access: the account details and everything saved for the twin, as JSON.
         if (method === 'GET' && path === '/api/account/export') {
           const token = accounts.get(user.id), live = token && sessions.get(token);
-          store.audit(user.id, 'data_exported', user.id);
+          await store.audit(user.id, 'data_exported', user.id);
           return json(res, 200, { exportedAt: new Date().toISOString(), label: 'Your saved Future Self data (AI-generated simulation, not a prediction)',
             account: { email: user.email, createdAt: new Date(user.createdAt).toISOString(), consentVersion: user.consentVersion },
-            twin: live ? savedDocument(live) : store.loadTwin(user.id) });
+            twin: live ? savedDocument(live) : await store.loadTwin(user.id) });
         }
         // Right to erasure: confirmed with the password, then the account, logins and twin are deleted together.
         if (method === 'POST' && path === '/api/account/delete') {
@@ -474,7 +501,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
           }
           const token = accounts.get(user.id);
           if (token) { const s = sessions.get(token); s?.controller?.abort(); s?.speechController?.abort(); s?.portraitController?.abort(); sessions.delete(token); accounts.delete(user.id); }
-          store.deleteUser(user.id);
+          await store.deleteUser(user.id);
           res.setHeader('Set-Cookie', sessionCookie('', { clear: true }));
           return json(res, 200, { ok: true });
         }
@@ -483,25 +510,25 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       // Account management for Tatoma admins: metadata only, never profiles, interviews or conversations.
       if (path.startsWith('/api/admin/')) {
         requireThat(store, 'Saved accounts are not set up on this server.', 503);
-        const admin = currentUser(req);
+        const admin = await currentUser(req);
         requireThat(admin?.role === 'admin', 'Admins only.', 403);
         if (method === 'GET' && path === '/api/admin/accounts') {
-          return json(res, 200, { accounts: store.listUsers(), audit: store.listAudit().slice(-50).reverse() });
+          return json(res, 200, { accounts: await store.listUsers(), audit: (await store.listAudit()).slice(-50).reverse() });
         }
         requireThat(method === 'POST', 'Not found.', 404);
-        const input = await body(req), target = typeof input.userId === 'string' ? store.findUser(input.userId) : null;
+        const input = await body(req), target = typeof input.userId === 'string' ? await store.findUser(input.userId) : null;
         requireThat(target, 'That account no longer exists.', 404);
         requireThat(target.id !== admin.id, 'Use another admin account to change your own.', 409);
         if (path === '/api/admin/accounts/delete') {
-          dropWorkspace(accounts.get(target.id));
-          store.deleteUser(target.id, admin.id);
+          await dropWorkspace(accounts.get(target.id));
+          await store.deleteUser(target.id, admin.id);
           return json(res, 200, { ok: true });
         }
         if (path === '/api/admin/accounts/reset') {
           // Shown once to the admin, who hands it over in person; only its hash is stored.
           const code = newResetCode(), expires = Date.now() + 30 * 60 * 1000;
-          store.setResetCode(target.id, hashToken(code), expires);
-          store.audit(admin.id, 'reset_code_issued', target.id);
+          await store.setResetCode(target.id, hashToken(code), expires);
+          await store.audit(admin.id, 'reset_code_issued', target.id);
           return json(res, 200, { code, expiresAt: new Date(expires).toISOString() });
         }
         throw new AppError(404, 'Not found.');
@@ -510,12 +537,12 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       const s = sessions.get(token);
       requireThat(s, 'Session missing or expired. Start a new one.', 401);
       // A saved twin answers only to its own login, not to the working token alone.
-      if (s.userId) requireThat(currentUser(req)?.id === s.userId, 'Your login has expired. Log in again.', 401);
+      if (s.userId) requireThat((await currentUser(req))?.id === s.userId, 'Your login has expired. Log in again.', 401);
       s.touched = Date.now();
-      // Saved after every change, once the response (including a streamed reply) is complete.
-      if (s.userId && method === 'POST') res.once('finish', () => persist(s));
+      // Saved after every change, before the reply is sent (json() and the twin stream's last event wait for it).
+      if (s.userId && method === 'POST') res.saveFirst = () => persist(s);
       if (method === 'DELETE' && path === '/api/session') {
-        dropWorkspace(token);
+        await dropWorkspace(token);
         return json(res, 200, { ok: true });
       }
       if (method === 'GET' && path === '/api/session') return json(res, 200, publicSession(s));
@@ -528,7 +555,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
       }
       if (method === 'DELETE' && path === '/api/portrait') {
         requireThat(!s.portraitController, 'A picture is being drawn. Wait for it to finish.', 409);
-        s.portrait = null; persist(s);
+        s.portrait = null; await persist(s);
         return json(res, 200, publicSession(s));
       }
       requireThat(method === 'POST', 'Not found.', 404);
@@ -744,7 +771,9 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
             }
             thread.push({ role: 'assistant', content: output.text });
             s.metrics = output.metrics;
-            await emit({ type: 'done', session: publicSession(s) });
+            const done = { type: 'done', session: publicSession(s) };
+            await saveFirst(res);
+            await emit(done);
           } catch (error) {
             if (!signal.aborted && !res.destroyed) await emit({
               type: 'error', error: error instanceof AppError ? error.message : 'Generation was interrupted. Retry.'
@@ -767,6 +796,7 @@ export function createApp(model = new AnthropicModel(), speech = createSpeech(),
     }
   });
   server.requestTimeout = 15000;
+  server.purged = purged; // The start-up purge, for tests.
   server.on('close', () => {
     clearInterval(timer); clearInterval(purgeTimer);
     for (const s of sessions.values()) s.controller?.abort();
@@ -787,10 +817,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (options.accessCode) console.log('Access code: required for guests and new accounts.');
   });
   server.on('error', error => { console.error(error.message); process.exitCode = 1; });
+  // A hosted database is checked (and migrated) at start-up, so a wrong DATABASE_URL shows at once.
+  store?.ready?.().then(() => console.log('Database: ready.'), error => console.error(`[storage] Database not reachable: ${error.message}`));
   // A host stops the container with SIGTERM: finish open requests briefly, then close the database cleanly.
   // Account twins are already saved after every change.
   const shutdown = () => {
-    server.close(() => { store?.close(); process.exit(0); });
+    server.close(async () => { await store?.close(); process.exit(0); });
     server.closeIdleConnections();
     setTimeout(() => server.closeAllConnections(), 5000).unref();
   };

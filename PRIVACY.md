@@ -5,14 +5,22 @@ and for how long. **It is not legal advice.** The lawful basis, the DPIA and the
 a decision by Tatoma.
 
 ## Where data lives
-- **Database:** a local SQLite file at `%LOCALAPPDATA%\Tatoma\AI-Twin\data\future-self.db`. It can be moved with
+- **Local development:** a SQLite file at `%LOCALAPPDATA%\Tatoma\AI-Twin\data\future-self.db`. It can be moved with
   `FUTURE_SELF_DB`.
   - It is outside the repository, and the app refuses cloud-synced folders such as OneDrive.
+- **Hosted version** (when `DATABASE_URL` is set): Neon Postgres in AWS Frankfurt (EU). The app itself runs on Google
+  Cloud Run in europe-west4 (Netherlands). See `docs/DEPLOYMENT.md`.
+  - Guests, live working copies and pasted work samples stay in the server's memory, as locally. They are lost when
+    the server stops (for example after about 15 idle minutes), never written to the database.
+  - Backups: Neon's point-in-time restore window (check its length on the current plan). A deleted account disappears
+    from backups once it is older than that window.
 - **Encryption:**
-  - Personal content and email addresses are encrypted (AES-256-GCM) before they reach the database.
-  - The key, `DATA_ENCRYPTION_KEY`, lives in the external `secrets.env`, so a copied database file alone is unreadable.
-  - Losing the key means losing the saved twins. Keep a private backup of `secrets.env`.
-- **Code boundary:** only `lib/store.mjs` knows about the database. A hosted EU database later replaces that one module.
+  - Personal content and email addresses are encrypted (AES-256-GCM) before they reach the database, so the
+    database provider only holds ciphertext for them.
+  - The key, `DATA_ENCRYPTION_KEY`, lives in the external `secrets.env` (locally) or in Google Secret Manager (hosted),
+    never next to the database, so a copied database alone is unreadable. The hosted key is a different key.
+  - Losing the key means losing the saved twins. Keep a private backup of `secrets.env` and `production.env`.
+- **Code boundary:** only `lib/store.mjs` (SQLite) and `lib/store-postgres.mjs` (hosted) know about the database.
 
 ## Data inventory
 | Data | Sensitivity | Stored? | Retention | Protection |
@@ -55,6 +63,8 @@ a decision by Tatoma.
   up to 30 days for abuse monitoring unless zero data retention is approved. Still to request.
 - **Anthropic** also receives the drawn picture once, to locate the eyes and mouth for the animation.
 - The browser's own speech service may receive the text when an online read-aloud voice is chosen. The app says so next to the voice picker.
+- **Hosted version only:** Google Cloud (Cloud Run and Secret Manager, europe-west4) runs the app and holds the keys;
+  Neon (Postgres, AWS Frankfurt) stores the encrypted accounts and twins. Check both DPAs before real participants.
 
 ## Open before real participants
 - Choose a lawful basis (consent, or legitimate interest) and record it.
@@ -64,4 +74,6 @@ a decision by Tatoma.
   notice next to the description field.
 - Add a privacy notice page.
 - Never give employers access to individual profiles without the participant's explicit, freely given consent.
-- Hosted version: EU hosting, HTTPS, backups that follow deletions, and an email service for verification and password reset.
+- Hosted version: EU hosting, HTTPS and backups that follow deletions are covered by the setup in
+  `docs/DEPLOYMENT.md`. Still open: an email service for verification and password reset (an admin reset code is used
+  instead), and a shared access code that is handed out only to invited testers.
